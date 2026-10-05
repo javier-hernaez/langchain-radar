@@ -1,0 +1,93 @@
+services:
+  # -------------------------------------------------------------
+  # Vector Store (Qdrant)
+  # -------------------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:v1.9.4
+    container_name: radar-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # HTTP REST API
+      - "6334:6334" # gRPC API
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=4
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - radar-net
+
+  # -------------------------------------------------------------
+  # Lakehouse Storage S3 (MinIO)
+  # -------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2024-05-10T01-41-38Z
+    container_name: radar-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web Console
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - radar-net
+
+  # Buckets Initializer
+  minio-init:
+    image: minio/mc:RELEASE.2024-05-09T17-04-24Z
+    container_name: radar-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb --ignore-existing myminio/bronze;
+      /usr/bin/mc mb --ignore-existing myminio/silver;
+      exit 0;
+      "
+    networks:
+      - radar-net
+
+  # -------------------------------------------------------------
+  # Cache & Event Queue (Redis)
+  # -------------------------------------------------------------
+  redis:
+    image: redis:7.2.5-alpine
+    container_name: radar-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - radar-net
+
+volumes:
+  qdrant_data:
+  minio_data:
+  redis_data:
+
+networks:
+  radar-net:
+    driver: bridge
