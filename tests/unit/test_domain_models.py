@@ -56,9 +56,7 @@ def test_chunk_metadata_immutability_and_extra_fields() -> None:
 
     # Extra fields forbidden check
     with pytest.raises(ValidationError):
-        ChunkMetadata.model_validate(
-            {**meta.model_dump(), "extra_field": "disallowed"}
-        )
+        ChunkMetadata.model_validate({**meta.model_dump(), "extra_field": "disallowed"})
 
 
 def test_code_chunk_structure() -> None:

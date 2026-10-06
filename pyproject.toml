@@ -19,6 +19,7 @@ dependencies = [
     "pyarrow>=16.0.0",
     "deltalake>=0.17.0",
     "python-dotenv>=1.0.0",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +34,7 @@ dev = [
 embeddings = [
     "onnxruntime>=1.18.0",
     "tokenizers>=0.19.0",
+    "fastembed>=0.8.0",
     "numpy>=1.26.0",
 ]
 
@@ -74,6 +76,9 @@ module = [
     "respx.*",
     "pygit2.*",
     "tree_sitter.*",
+    "fastembed.*",
+    "onnxruntime.*",
+    "pyarrow.*",
 ]
 ignore_missing_imports = true
 
