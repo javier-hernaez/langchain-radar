@@ -24,7 +24,7 @@ class CanonicalImportResolver:
             tree = ast.parse(content, filename=file_path)
         except SyntaxError as e:
             logger.warning(
-                "Fallo sintáctico al parsear %s para resolver importaciones: %e", file_path, e
+                "Fallo sintáctico al parsear %s para resolver importaciones: %s", file_path, e
             )
             return
 

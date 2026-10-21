@@ -32,9 +32,6 @@ class FastembedRerankerAdapter(RerankerEngine):
         if not candidates:
             return []
 
-        if len(candidates) <= 1:
-            return candidates[:top_k]
-
         self._init_model()
         assert self._model is not None
 

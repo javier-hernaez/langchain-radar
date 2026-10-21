@@ -87,3 +87,53 @@ async def test_delta_silver_append_and_read_chunks(tmp_path: Path) -> None:
     assert code_found.start_line == 1
     assert doc_found.metadata.entity_name == "Overview"
     assert doc_found.header_path == ("Overview",)
+
+    # Empty append
+    empty_uri = await storage.append_chunks([])
+    assert empty_uri == table_dir
+
+
+@pytest.mark.asyncio
+async def test_delta_silver_error_handling(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from src.domain.exceptions import StorageError
+
+    storage = DeltaSilverStorage(table_uri=str(tmp_path / "delta_err"))
+
+    # Error en append_chunks
+    with (
+        patch(
+            "src.infrastructure.storage.delta_silver.write_deltalake",
+            side_effect=RuntimeError("Delta write err"),
+        ),
+        pytest.raises(StorageError),
+    ):
+        await storage.append_chunks(
+            [
+                CodeChunk(
+                    content="pass",
+                    raw_code="pass",
+                    start_line=1,
+                    end_line=2,
+                    metadata=ChunkMetadata(
+                        chunk_id=uuid.uuid4(),
+                        file_path="test.py",
+                        canonical_import="test",
+                        module_name="test",
+                        language="python",
+                        entity_type="function",
+                        entity_name="test",
+                        commit_sha="a" * 40,
+                        commit_date=datetime.now(UTC),
+                        release_version="main",
+                        author="test_author",
+                        content_hash="h" * 64,
+                    ),
+                )
+            ]
+        )
+
+    # Error en get_chunks_by_commit
+    with pytest.raises(StorageError):
+        await storage.get_chunks_by_commit("nonexistent_commit")

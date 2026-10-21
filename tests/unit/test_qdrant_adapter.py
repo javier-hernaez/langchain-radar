@@ -141,3 +141,77 @@ async def test_qdrant_adapter_crud_hybrid_search_and_blue_green() -> None:
     assert any(
         a.alias_name == alias_active and a.collection_name == collection_v2 for a in aliases_after
     )
+
+
+@pytest.mark.asyncio
+async def test_qdrant_adapter_advanced_filters_and_hashes() -> None:
+    from unittest.mock import MagicMock
+
+    from src.domain.exceptions import VectorStoreError
+
+    memory_client = QdrantClient(":memory:")
+    adapter = QdrantVectorAdapter(client=memory_client, dimension=4)
+    coll = "test_adv_filters"
+    await adapter.ensure_collection(coll)
+
+    # Empty upsert
+    assert await adapter.upsert_chunks(coll, [], dense_vectors=[]) == 0
+
+    cid = uuid.uuid4()
+    meta = ChunkMetadata(
+        chunk_id=cid,
+        file_path="libs/core/prompts.py",
+        canonical_import="from langchain_core.prompts import PromptTemplate",
+        module_name="langchain_core.prompts",
+        language="python",
+        entity_type="class",
+        entity_name="PromptTemplate",
+        commit_sha="2" * 40,
+        commit_date=datetime(2026, 5, 1, tzinfo=UTC),
+        release_version="v0.2.0",
+        semver_major=0,
+        semver_minor=2,
+        author="alice",
+        content_hash="h" * 64,
+        is_deprecated=True,
+    )
+    chunk = CodeChunk(
+        content="class PromptTemplate: pass",
+        raw_code="class PromptTemplate: pass",
+        start_line=1,
+        end_line=10,
+        metadata=meta,
+    )
+
+    await adapter.upsert_chunks(
+        coll,
+        [chunk],
+        dense_vectors=[[0.5, 0.5, 0.5, 0.5]],
+        sparse_vectors=[([0, 1], [1.0, 2.0])],
+    )
+
+    # Test all SearchFilters (module_prefix, semver, since_date)
+    filters = SearchFilters(
+        module_prefix="langchain_core",
+        semver_major=0,
+        semver_minor=2,
+        is_deprecated=True,
+        since_date=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    res = await adapter.search_hybrid(
+        collection_name=coll,
+        dense_vector=[0.5, 0.5, 0.5, 0.5],
+        sparse_indices=[0, 1],
+        sparse_values=[1.0, 2.0],
+        limit=5,
+        filters=filters,
+    )
+    assert len(res) == 1
+    assert res[0].entity_name == "PromptTemplate"
+
+    # Test VectorStoreError propagation on error
+    bad_client = MagicMock()
+    bad_client.get_collections.side_effect = RuntimeError("Qdrant offline")
+    bad_adapter = QdrantVectorAdapter(client=bad_client)
+    with pytest.raises(VectorStoreError):
+        await bad_adapter.ensure_collection("bad_coll")
