@@ -83,6 +83,66 @@ services:
     networks:
       - radar-net
 
+  # -------------------------------------------------------------
+  # LangChain Radar REST API Service
+  # -------------------------------------------------------------
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    container_name: radar-api
+    restart: unless-stopped
+    command: ["python", "-m", "src.interfaces.cli.manage", "serve", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - radar-net
+
+  # -------------------------------------------------------------
+  # LangChain Radar Background Event Consumer Worker
+  # -------------------------------------------------------------
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.worker
+    container_name: radar-worker
+    restart: unless-stopped
+    command: ["python", "-m", "src.interfaces.cli.manage", "worker", "--consumer-name", "compose-worker-1"]
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_SECURE=false
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - radar-net
+
 volumes:
   qdrant_data:
   minio_data:
