@@ -7,6 +7,7 @@ from src.domain.models.search import (
     SearchResultItem,
     SearchTimings,
 )
+from src.domain.models.state import SyncCheckpoint
 
 __all__ = [
     "ChunkMetadata",
@@ -20,4 +21,5 @@ __all__ = [
     "SearchResponse",
     "SearchResultItem",
     "SearchTimings",
+    "SyncCheckpoint",
 ]
