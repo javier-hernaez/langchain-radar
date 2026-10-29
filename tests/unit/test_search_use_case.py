@@ -52,6 +52,7 @@ async def test_search_use_case_execution_with_rerank_and_parent_context() -> Non
     mock_reranker.rerank.return_value = [reranked_child]
 
     # Simular recuperación del padre para inyección de contexto
+    mock_vector.get_chunks_by_ids.return_value = {parent_id: parent_item}
     mock_vector.get_chunk_by_id.return_value = parent_item
 
     use_case = SearchCodeUseCase(

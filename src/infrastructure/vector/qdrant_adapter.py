@@ -309,50 +309,65 @@ class QdrantVectorAdapter(VectorRepository):
                 {"collection_name": collection_name, "limit": limit},
             ) from e
 
+    async def get_chunks_by_ids(
+        self, collection_name: str, chunk_ids: list[UUID]
+    ) -> dict[UUID, SearchResultItem]:
+        """Recupera un lote de chunks específicos por sus IDs en una única operación."""
+        if not chunk_ids:
+            return {}
+
+        try:
+            str_ids = [str(cid) for cid in chunk_ids]
+            points = self._client.retrieve(
+                collection_name=collection_name,
+                ids=str_ids,
+                with_payload=True,
+            )
+            items_by_id: dict[UUID, SearchResultItem] = {}
+            for point in points:
+                payload = point.payload or {}
+                if "chunk_id" not in payload:
+                    continue
+                cid = UUID(payload["chunk_id"])
+                commit_date_raw = payload.get("commit_date")
+                last_updated = (
+                    datetime.fromisoformat(commit_date_raw)
+                    if isinstance(commit_date_raw, str)
+                    else datetime.now(UTC)
+                )
+
+                item = SearchResultItem(
+                    chunk_id=cid,
+                    parent_chunk_id=UUID(payload["parent_chunk_id"])
+                    if payload.get("parent_chunk_id")
+                    else None,
+                    hybrid_score=1.0,
+                    entity_name=payload.get("entity_name", ""),
+                    canonical_import=payload.get("canonical_import", ""),
+                    file_path=payload.get("file_path", ""),
+                    release_version=payload.get("release_version", "dev"),
+                    last_updated=last_updated,
+                    parent_context=None,
+                    content=payload.get("content", ""),
+                    author=payload.get("author"),
+                    pr_number=payload.get("pr_number"),
+                    is_deprecated=payload.get("is_deprecated", False),
+                    breaking_change=payload.get("breaking_change", False),
+                )
+                items_by_id[cid] = item
+            return items_by_id
+        except Exception as e:
+            raise VectorStoreError(
+                f"Error al recuperar lote de chunks por IDs en Qdrant: {e}",
+                {"collection_name": collection_name, "count": len(chunk_ids)},
+            ) from e
+
     async def get_chunk_by_id(
         self, collection_name: str, chunk_id: UUID
     ) -> SearchResultItem | None:
         """Recupera un chunk específico por su ID."""
-        try:
-            points = self._client.retrieve(
-                collection_name=collection_name,
-                ids=[str(chunk_id)],
-                with_payload=True,
-            )
-            if not points:
-                return None
-            point = points[0]
-            payload = point.payload or {}
-            commit_date_raw = payload.get("commit_date")
-            last_updated = (
-                datetime.fromisoformat(commit_date_raw)
-                if isinstance(commit_date_raw, str)
-                else datetime.now(UTC)
-            )
-
-            return SearchResultItem(
-                chunk_id=UUID(payload["chunk_id"]),
-                parent_chunk_id=UUID(payload["parent_chunk_id"])
-                if payload.get("parent_chunk_id")
-                else None,
-                hybrid_score=1.0,
-                entity_name=payload.get("entity_name", ""),
-                canonical_import=payload.get("canonical_import", ""),
-                file_path=payload.get("file_path", ""),
-                release_version=payload.get("release_version", "dev"),
-                last_updated=last_updated,
-                parent_context=None,
-                content=payload.get("content", ""),
-                author=payload.get("author"),
-                pr_number=payload.get("pr_number"),
-                is_deprecated=payload.get("is_deprecated", False),
-                breaking_change=payload.get("breaking_change", False),
-            )
-        except Exception as e:
-            raise VectorStoreError(
-                f"Error al recuperar chunk por ID en Qdrant: {e}",
-                {"collection_name": collection_name, "chunk_id": str(chunk_id)},
-            ) from e
+        results = await self.get_chunks_by_ids(collection_name, [chunk_id])
+        return results.get(chunk_id)
 
     async def switch_alias(
         self, alias_name: str, target_collection: str, old_collection: str | None = None

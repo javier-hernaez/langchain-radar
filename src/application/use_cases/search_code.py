@@ -1,5 +1,6 @@
 import logging
 import time
+from uuid import UUID
 
 from config.settings import Settings, get_settings
 from src.domain.models.search import (
@@ -84,18 +85,28 @@ class SearchCodeUseCase:
         stage2_duration_ms = (time.monotonic() - stage2_start) * 1000.0
 
         # -----------------------------------------------------------------
-        # Etapa 3: Inyección de Contexto Padre si fue solicitado
+        # Etapa 3: Inyección de Contexto Padre si fue solicitado (Batch O(1))
         # -----------------------------------------------------------------
+        parent_map: dict[UUID, SearchResultItem] = {}
+        if query.include_parent_context:
+            parent_ids = list(
+                {
+                    item.parent_chunk_id
+                    for item in reranked_items
+                    if item.parent_chunk_id is not None
+                }
+            )
+            if parent_ids:
+                parent_map = await self._vector_repo.get_chunks_by_ids(
+                    collection_name=target_collection,
+                    chunk_ids=parent_ids,
+                )
+
         enriched_results: list[SearchResultItem] = []
         for item in reranked_items:
             parent_context: str | None = None
-            if query.include_parent_context and item.parent_chunk_id is not None:
-                parent_chunk = await self._vector_repo.get_chunk_by_id(
-                    collection_name=target_collection,
-                    chunk_id=item.parent_chunk_id,
-                )
-                if parent_chunk:
-                    parent_context = parent_chunk.content
+            if item.parent_chunk_id is not None and item.parent_chunk_id in parent_map:
+                parent_context = parent_map[item.parent_chunk_id].content
 
             enriched_results.append(item.model_copy(update={"parent_context": parent_context}))
 

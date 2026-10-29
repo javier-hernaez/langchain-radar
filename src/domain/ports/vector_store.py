@@ -44,6 +44,12 @@ class VectorRepository(Protocol):
         """Recupera un chunk específico por su ID."""
         ...
 
+    async def get_chunks_by_ids(
+        self, collection_name: str, chunk_ids: list[UUID]
+    ) -> dict[UUID, SearchResultItem]:
+        """Recupera un lote de chunks específicos por sus IDs en una única operación."""
+        ...
+
     async def switch_alias(
         self, alias_name: str, target_collection: str, old_collection: str | None = None
     ) -> None:
