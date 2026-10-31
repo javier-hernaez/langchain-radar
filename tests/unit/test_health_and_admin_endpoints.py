@@ -21,6 +21,21 @@ async def test_health_check_endpoint() -> None:
 
 @pytest.mark.asyncio
 async def test_sync_status_endpoint() -> None:
+    from datetime import UTC, datetime
+
+    from src.domain.models.state import SyncCheckpoint
+    from src.interfaces.api.v1.health import set_health_state_store
+
+    mock_state = AsyncMock()
+    now = datetime.now(UTC)
+    mock_state.get_checkpoint.return_value = SyncCheckpoint(
+        checkpoint_id="backfill_cursor",
+        last_commit_sha="a" * 40,
+        last_synced_at=now,
+    )
+    mock_state.get_processed_pr_count.return_value = 15
+    set_health_state_store(mock_state)
+
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.get("/api/v1/status/sync")
@@ -28,6 +43,8 @@ async def test_sync_status_endpoint() -> None:
         data = response.json()
         assert data["active_collection"] == "langchain_radar_active"
         assert "stream_key" in data
+        assert data["total_processed_prs"] == 15
+        assert data["last_commit_sha"] == "a" * 40
 
 
 @pytest.mark.asyncio

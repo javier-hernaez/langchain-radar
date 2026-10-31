@@ -6,11 +6,14 @@ from typing import Any
 from config.settings import Settings, get_settings
 from src.application.splitters.ast_python import ASTPythonSplitter
 from src.application.splitters.canonical_resolver import CanonicalImportResolver
+from src.application.splitters.diff_splitter import GitDiffSplitter
 from src.application.splitters.mdx_parser import MDXParser
 from src.domain.models.chunk import CodeChunk, DocChunk
+from src.domain.models.state import SyncCheckpoint
 from src.domain.ports.embedder import EmbeddingEngine
 from src.domain.ports.event_queue import EventQueue
 from src.domain.ports.object_store import SilverStorage
+from src.domain.ports.state_store import StateStore
 from src.domain.ports.vector_store import VectorRepository
 from src.infrastructure.github.shallow_git import ShallowGitEngine
 from src.infrastructure.security.secret_scrubber import SecretScrubber
@@ -30,14 +33,17 @@ class IngestEventUseCase:
         shallow_git: ShallowGitEngine | None = None,
         ast_splitter: ASTPythonSplitter | None = None,
         mdx_parser: MDXParser | None = None,
+        diff_splitter: GitDiffSplitter | None = None,
         resolver: CanonicalImportResolver | None = None,
         scrubber: SecretScrubber | None = None,
+        state_store: StateStore | None = None,
         settings: Settings | None = None,
     ) -> None:
         self._silver_storage = silver_storage
         self._vector_repo = vector_repo
         self._embedding_engine = embedding_engine
         self._event_queue = event_queue
+        self._state_store = state_store
         self._shallow_git = shallow_git or ShallowGitEngine()
         self._scrubber = scrubber or SecretScrubber()
         self._resolver = resolver or CanonicalImportResolver()
@@ -45,6 +51,9 @@ class IngestEventUseCase:
             resolver=self._resolver, scrubber=self._scrubber
         )
         self._mdx_parser = mdx_parser or MDXParser(scrubber=self._scrubber)
+        self._diff_splitter = diff_splitter or GitDiffSplitter(
+            resolver=self._resolver, scrubber=self._scrubber
+        )
         self._settings = settings or get_settings()
 
     async def process_stream_message(
@@ -153,11 +162,24 @@ class IngestEventUseCase:
                     )
                     chunks_to_persist.extend(doc_chunks)
 
+                # 4. Particionado de Diff Semántico (Hunks)
+                diff_chunks = self._diff_splitter.parse_patch_hunks(
+                    file_path=file_path,
+                    patch_content=patch_content,
+                    commit_sha=merge_sha,
+                    commit_date=merged_at,
+                    release_version="main",
+                    pr_number=pr_number,
+                    pr_title=pr_title,
+                    author=pr_author,
+                )
+                chunks_to_persist.extend(diff_chunks)
+
         if chunks_to_persist:
-            # 4. Guardar en Capa Silver (Delta Lake)
+            # 5. Guardar en Capa Silver (Delta Lake)
             await self._silver_storage.append_chunks(chunks_to_persist)
 
-            # 5. Generar embeddings y hacer Upsert en Gold (Qdrant)
+            # 6. Generar embeddings y hacer Upsert en Gold (Qdrant)
             with metrics.measure_time(
                 "pipeline_processing_time_seconds", labels={"phase": "embed"}
             ):
@@ -184,7 +206,20 @@ class IngestEventUseCase:
                 len(chunks_to_persist),
             )
 
-        # 6. Confirmar mensaje en el Consumer Group de Redis Streams (XACK)
+        if self._state_store:
+            await self._state_store.record_processed_pr(pr_number, merge_sha)
+            await self._state_store.save_checkpoint(
+                SyncCheckpoint(
+                    checkpoint_id="stream_consumer",
+                    last_commit_sha=merge_sha,
+                    cursor=message_id,
+                    last_synced_at=datetime.now(UTC),
+                    total_processed_items=1,
+                    metadata={"stream_name": stream_name, "pr_number": pr_number},
+                )
+            )
+
+        # 7. Confirmar mensaje en el Consumer Group de Redis Streams (XACK)
         if self._event_queue:
             await self._event_queue.ack_event(stream_name, group_name, message_id)
 

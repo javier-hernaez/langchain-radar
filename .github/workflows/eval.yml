@@ -1,0 +1,30 @@
+name: RAG Evaluation Benchmark
+
+on:
+  schedule:
+    - cron: "0 2 * * 1" # Semanal cada lunes a las 2 AM UTC
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Install Dependencies
+        run: |
+          uv venv
+          uv pip install -e ".[dev,embeddings]"
+
+      - name: Run RAG Evaluation Benchmark
+        run: |
+          uv run python tests/evaluation/run_rag_eval.py

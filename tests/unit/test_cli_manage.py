@@ -106,6 +106,22 @@ async def test_cli_run_eval() -> None:
         assert mock_eval.called
 
 
+@pytest.mark.asyncio
+async def test_cli_run_status(capsys: pytest.CaptureFixture[str]) -> None:
+    from src.interfaces.cli.manage import run_status
+
+    args = argparse.Namespace()
+    with patch("src.interfaces.cli.manage.RedisStateStore") as mock_state_cls:
+        mock_state = AsyncMock()
+        mock_state.get_processed_pr_count.return_value = 42
+        mock_state.get_checkpoint.return_value = None
+        mock_state_cls.return_value = mock_state
+
+        await run_status(args)
+        captured = capsys.readouterr()
+        assert "Total PRs procesados: 42" in captured.out
+
+
 def test_cli_main_dispatch() -> None:
     with (
         patch("sys.argv", ["manage.py", "serve", "--port", "9000"]),

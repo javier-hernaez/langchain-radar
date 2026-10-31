@@ -7,7 +7,9 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from config.settings import Settings, get_settings
+from src.domain.ports.state_store import StateStore
 from src.domain.ports.vector_store import VectorRepository
+from src.infrastructure.state.redis_state import RedisStateStore
 from src.infrastructure.vector.qdrant_adapter import QdrantVectorAdapter
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["Ops & Governance"])
 
 _vector_repo: VectorRepository | None = None
+_state_store: StateStore | None = None
 
 
 def get_vector_repo() -> VectorRepository:
@@ -29,6 +32,18 @@ def set_health_vector_repo(repo: VectorRepository | None) -> None:
     _vector_repo = repo
 
 
+def get_state_store() -> StateStore:
+    global _state_store
+    if _state_store is None:
+        _state_store = RedisStateStore()
+    return _state_store
+
+
+def set_health_state_store(store: StateStore | None) -> None:
+    global _state_store
+    _state_store = store
+
+
 class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
@@ -40,6 +55,9 @@ class SyncStatusResponse(BaseModel):
     stream_key: str
     environment: str
     timestamp: datetime
+    last_commit_sha: str | None = None
+    last_synced_at: datetime | None = None
+    total_processed_prs: int = 0
 
 
 class ReindexRequest(BaseModel):
@@ -101,13 +119,32 @@ async def check_health() -> HealthResponse:
 )
 async def get_sync_status(
     settings: Annotated[Settings, Depends(get_settings)],
+    state_store: Annotated[StateStore, Depends(get_state_store)],
 ) -> SyncStatusResponse:
     """Consulta la colección activa y el estado del stream de ingesta."""
+    last_commit_sha: str | None = None
+    last_synced_at: datetime | None = None
+    total_prs = 0
+
+    try:
+        cp = await state_store.get_checkpoint(
+            "backfill_cursor"
+        ) or await state_store.get_checkpoint("stream_consumer")
+        if cp:
+            last_commit_sha = cp.last_commit_sha
+            last_synced_at = cp.last_synced_at
+        total_prs = await state_store.get_processed_pr_count()
+    except Exception as e:
+        logger.warning("No se pudo obtener información detallada del state_store: %s", e)
+
     return SyncStatusResponse(
         active_collection=settings.qdrant_collection_active,
         stream_key=settings.redis_stream_key,
         environment=settings.app_env,
         timestamp=datetime.now(UTC),
+        last_commit_sha=last_commit_sha,
+        last_synced_at=last_synced_at,
+        total_processed_prs=total_prs,
     )
 
 

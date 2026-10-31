@@ -11,6 +11,7 @@ from src.application.use_cases.ingest_event import IngestEventUseCase
 from src.infrastructure.embeddings.bge_m3_local import FastembedEmbeddingAdapter
 from src.infrastructure.github.graphql_client import GitHubGraphQLClient
 from src.infrastructure.queue.redis_streams import RedisStreamsAdapter
+from src.infrastructure.state.redis_state import RedisStateStore
 from src.infrastructure.storage.delta_silver import DeltaSilverStorage
 from src.infrastructure.storage.minio_bronze import MinioBronzeStorage
 from src.infrastructure.vector.qdrant_adapter import QdrantVectorAdapter
@@ -32,6 +33,7 @@ async def run_backfill(args: argparse.Namespace) -> None:
     silver_storage = DeltaSilverStorage(settings=settings)
     vector_repo = QdrantVectorAdapter(settings=settings)
     embedding_engine = FastembedEmbeddingAdapter(settings=settings)
+    state_store = RedisStateStore()
 
     use_case = BackfillUseCase(
         github_client=github_client,
@@ -39,6 +41,7 @@ async def run_backfill(args: argparse.Namespace) -> None:
         silver_storage=silver_storage,
         vector_repo=vector_repo,
         embedding_engine=embedding_engine,
+        state_store=state_store,
         settings=settings,
     )
 
@@ -86,6 +89,7 @@ async def run_worker(args: argparse.Namespace) -> None:
         vector_repo=vector,
         embedding_engine=embedder,
         event_queue=queue,
+        state_store=RedisStateStore(),
         settings=settings,
     )
 
@@ -158,6 +162,28 @@ async def run_eval(args: argparse.Namespace) -> None:
     logger.info("Iniciando evaluación RAG con dataset: %s", dataset_path)
     report = await run_evaluation(dataset_path)
     logger.info("Resultado de evaluación: %s", report)
+
+
+async def run_status(_args: argparse.Namespace) -> None:
+    """Muestra el estado de sincronización y métricas del High-Water Mark."""
+    settings = get_settings()
+    state_store = RedisStateStore()
+    cp_backfill = await state_store.get_checkpoint("backfill_cursor")
+    cp_stream = await state_store.get_checkpoint("stream_consumer")
+    total_prs = await state_store.get_processed_pr_count()
+
+    print("=== Estado de LangChain Radar ===")
+    print(f"Entorno: {settings.app_env}")
+    print(f"Colección activa Qdrant: {settings.qdrant_collection_active}")
+    print(f"Stream Redis: {settings.redis_stream_key}")
+    print(f"Total PRs procesados: {total_prs}")
+    if cp_backfill:
+        print(
+            f"Backfill - Último commit: {cp_backfill.last_commit_sha} | "
+            f"Sincronizado: {cp_backfill.last_synced_at.isoformat()}"
+        )
+    if cp_stream:
+        print(f"Stream - Último commit: {cp_stream.last_commit_sha} | Mensaje: {cp_stream.cursor}")
 
 
 def main() -> None:
@@ -234,6 +260,9 @@ def main() -> None:
         help="Ruta al fichero JSON con preguntas y ground truth",
     )
 
+    # Subcomando: status
+    subparsers.add_parser("status", help="Consultar estado de sincronización y checkpoints")
+
     args = parser.parse_args()
 
     if args.command == "backfill":
@@ -246,6 +275,8 @@ def main() -> None:
         asyncio.run(run_reindex(args))
     elif args.command == "eval":
         asyncio.run(run_eval(args))
+    elif args.command == "status":
+        asyncio.run(run_status(args))
     else:
         parser.print_help()
         sys.exit(1)

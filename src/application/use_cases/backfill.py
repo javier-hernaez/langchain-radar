@@ -2,14 +2,17 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from config.settings import Settings, get_settings
 from src.application.splitters.ast_python import ASTPythonSplitter
 from src.application.splitters.canonical_resolver import CanonicalImportResolver
 from src.application.splitters.mdx_parser import MDXParser
 from src.domain.models.chunk import CodeChunk, DocChunk
+from src.domain.models.state import SyncCheckpoint
 from src.domain.ports.embedder import EmbeddingEngine
 from src.domain.ports.object_store import BronzeStorage, SilverStorage
+from src.domain.ports.state_store import StateStore
 from src.domain.ports.vector_store import VectorRepository
 from src.infrastructure.github.graphql_client import GitHubGraphQLClient
 from src.infrastructure.github.shallow_git import ShallowGitEngine
@@ -57,6 +60,7 @@ class BackfillUseCase:
         mdx_parser: MDXParser | None = None,
         resolver: CanonicalImportResolver | None = None,
         scrubber: SecretScrubber | None = None,
+        state_store: StateStore | None = None,
         settings: Settings | None = None,
     ) -> None:
         self._github_client = github_client
@@ -64,6 +68,7 @@ class BackfillUseCase:
         self._silver_storage = silver_storage
         self._vector_repo = vector_repo
         self._embedding_engine = embedding_engine
+        self._state_store = state_store
         self._shallow_git = shallow_git or ShallowGitEngine()
         self._scrubber = scrubber or SecretScrubber()
         self._resolver = resolver or CanonicalImportResolver()
@@ -88,6 +93,12 @@ class BackfillUseCase:
         chunks_skipped_by_hash = 0
 
         cursor: str | None = None
+        if self._state_store:
+            saved_cp = await self._state_store.get_checkpoint("backfill_cursor")
+            if saved_cp and saved_cp.cursor:
+                cursor = saved_cp.cursor
+                logger.info("Reanudando backfill desde cursor guardado: %s", cursor)
+
         has_next = True
         seen_hashes: set[str] = set()
 
@@ -104,6 +115,10 @@ class BackfillUseCase:
                 break
 
             for pr in prs:
+                if self._state_store and await self._state_store.is_pr_processed(pr.pr_number):
+                    logger.info("PR #%d ya procesado según StateStore. Omitiendo.", pr.pr_number)
+                    continue
+
                 # 1. Guardar raw event en Bronze (inmutable)
                 raw_payload = json.dumps(pr.model_dump(), default=str)
                 await self._bronze_storage.save_raw_event(
@@ -194,8 +209,23 @@ class BackfillUseCase:
                             sparse_vectors=sparse_vectors,
                         )
                         chunks_indexed += inserted
+                if self._state_store:
+                    await self._state_store.record_processed_pr(pr.pr_number, pr.merge_commit_sha)
 
                 prs_processed += 1
+
+            if self._state_store and prs:
+                last_pr = prs[-1]
+                await self._state_store.save_checkpoint(
+                    SyncCheckpoint(
+                        checkpoint_id="backfill_cursor",
+                        last_commit_sha=last_pr.merge_commit_sha,
+                        cursor=cursor,
+                        last_synced_at=datetime.now(UTC),
+                        total_processed_items=prs_processed,
+                        metadata={"collection": target_collection},
+                    )
+                )
 
         duration = time.monotonic() - start_time
         return BackfillSummary(

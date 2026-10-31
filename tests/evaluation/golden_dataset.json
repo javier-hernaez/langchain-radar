@@ -1,0 +1,177 @@
+[
+  {
+    "id": "eval_001",
+    "question": "¿Cómo vincular herramientas estructuradas a un modelo de chat en LangChain moderno usando LCEL?",
+    "expected_symbol": "BaseChatModel.bind_tools",
+    "expected_canonical_import": "from langchain_core.language_models import BaseChatModel",
+    "expected_keywords": ["bind_tools", "BaseChatModel", "tools", "strict"]
+  },
+  {
+    "id": "eval_002",
+    "question": "¿Dónde se importa RunnablePassthrough y cómo se usa para componer cadenas funcionales?",
+    "expected_symbol": "RunnablePassthrough",
+    "expected_canonical_import": "from langchain_core.runnables import RunnablePassthrough",
+    "expected_keywords": ["RunnablePassthrough", "assign", "chain"]
+  },
+  {
+    "id": "eval_003",
+    "question": "¿Cómo crear una herramienta personalizada con el decorador tool en langchain_core?",
+    "expected_symbol": "tool",
+    "expected_canonical_import": "from langchain_core.tools import tool",
+    "expected_keywords": ["tool", "args_schema", "description"]
+  },
+  {
+    "id": "eval_004",
+    "question": "¿Cómo migrar de LLMChain hacia la sintaxis declarativa de pipe de LCEL?",
+    "expected_symbol": "RunnableSequence",
+    "expected_canonical_import": "from langchain_core.runnables import RunnableSequence",
+    "expected_keywords": ["LCEL", "|", "invoke", "pipe"]
+  },
+  {
+    "id": "eval_005",
+    "question": "¿Cuál es la clase base moderna para mensajes estructurados y dónde se importa HumanMessage?",
+    "expected_symbol": "HumanMessage",
+    "expected_canonical_import": "from langchain_core.messages import HumanMessage",
+    "expected_keywords": ["HumanMessage", "AIMessage", "SystemMessage", "content"]
+  },
+  {
+    "id": "eval_006",
+    "question": "¿Cómo invocar streaming asíncrono en un modelo de lenguaje de chat?",
+    "expected_symbol": "BaseChatModel.astream",
+    "expected_canonical_import": "from langchain_core.language_models import BaseChatModel",
+    "expected_keywords": ["astream", "AIMessageChunk", "async"]
+  },
+  {
+    "id": "eval_007",
+    "question": "¿Cómo implementar ChatPromptTemplate con mensajes de sistema y variables dinámicas?",
+    "expected_symbol": "ChatPromptTemplate",
+    "expected_canonical_import": "from langchain_core.prompts import ChatPromptTemplate",
+    "expected_keywords": ["ChatPromptTemplate", "from_messages", "input_variables"]
+  },
+  {
+    "id": "eval_008",
+    "question": "¿Dónde se define BaseOutputParser y cómo parsear salidas estructuradas JSON?",
+    "expected_symbol": "JsonOutputParser",
+    "expected_canonical_import": "from langchain_core.output_parsers import JsonOutputParser",
+    "expected_keywords": ["JsonOutputParser", "parse", "pydantic_object"]
+  },
+  {
+    "id": "eval_009",
+    "question": "¿Cómo propagar metadatos y callbacks a través de una ejecución de LCEL con config?",
+    "expected_symbol": "RunnableConfig",
+    "expected_canonical_import": "from langchain_core.runnables import RunnableConfig",
+    "expected_keywords": ["RunnableConfig", "callbacks", "tags", "metadata"]
+  },
+  {
+    "id": "eval_010",
+    "question": "¿Cuál es la interfaz estándar para crear InMemoryVectorStore en langchain_core?",
+    "expected_symbol": "InMemoryVectorStore",
+    "expected_canonical_import": "from langchain_core.vectorstores import InMemoryVectorStore",
+    "expected_keywords": ["InMemoryVectorStore", "similarity_search", "add_texts"]
+  },
+  {
+    "id": "eval_011",
+    "question": "¿Cómo definir salidas estructuradas directas usando with_structured_output en chat models?",
+    "expected_symbol": "BaseChatModel.with_structured_output",
+    "expected_canonical_import": "from langchain_core.language_models import BaseChatModel",
+    "expected_keywords": ["with_structured_output", "schema", "method"]
+  },
+  {
+    "id": "eval_012",
+    "question": "¿Dónde se encuentra la clase ToolMessage para representar resultados de llamadas de herramientas?",
+    "expected_symbol": "ToolMessage",
+    "expected_canonical_import": "from langchain_core.messages import ToolMessage",
+    "expected_keywords": ["ToolMessage", "tool_call_id", "content"]
+  },
+  {
+    "id": "eval_013",
+    "question": "¿Cómo ejecutar múltiples runnables concurrentemente en paralelo mediante RunnableParallel?",
+    "expected_symbol": "RunnableParallel",
+    "expected_canonical_import": "from langchain_core.runnables import RunnableParallel",
+    "expected_keywords": ["RunnableParallel", "dict", "parallel"]
+  },
+  {
+    "id": "eval_014",
+    "question": "¿Cómo envolver funciones Python arbitrarias como componentes LCEL con RunnableLambda?",
+    "expected_symbol": "RunnableLambda",
+    "expected_canonical_import": "from langchain_core.runnables import RunnableLambda",
+    "expected_keywords": ["RunnableLambda", "func", "invoke"]
+  },
+  {
+    "id": "eval_015",
+    "question": "¿Cómo inyectar un historial dinámico de conversación en un prompt usando MessagesPlaceholder?",
+    "expected_symbol": "MessagesPlaceholder",
+    "expected_canonical_import": "from langchain_core.prompts import MessagesPlaceholder",
+    "expected_keywords": ["MessagesPlaceholder", "variable_name", "optional"]
+  },
+  {
+    "id": "eval_016",
+    "question": "¿Dónde se ubica la interfaz abstracta Embeddings para cálculo de representaciones vectoriales?",
+    "expected_symbol": "Embeddings",
+    "expected_canonical_import": "from langchain_core.embeddings import Embeddings",
+    "expected_keywords": ["Embeddings", "embed_documents", "embed_query"]
+  },
+  {
+    "id": "eval_017",
+    "question": "¿Cuál es la clase base universal Document con page_content y metadata?",
+    "expected_symbol": "Document",
+    "expected_canonical_import": "from langchain_core.documents import Document",
+    "expected_keywords": ["Document", "page_content", "metadata"]
+  },
+  {
+    "id": "eval_018",
+    "question": "¿Cómo capturar trazas de ejecución en LangSmith usando el context manager collect_runs?",
+    "expected_symbol": "collect_runs",
+    "expected_canonical_import": "from langchain_core.tracers.context import collect_runs",
+    "expected_keywords": ["collect_runs", "traced_runs", "run_id"]
+  },
+  {
+    "id": "eval_019",
+    "question": "¿Cómo implementar enrutamiento condicional entre cadenas usando RunnableBranch?",
+    "expected_symbol": "RunnableBranch",
+    "expected_canonical_import": "from langchain_core.runnables import RunnableBranch",
+    "expected_keywords": ["RunnableBranch", "condition", "default"]
+  },
+  {
+    "id": "eval_020",
+    "question": "¿Cuál es el parser de texto plano StrOutputParser para extraer texto de un AIMessage?",
+    "expected_symbol": "StrOutputParser",
+    "expected_canonical_import": "from langchain_core.output_parsers import StrOutputParser",
+    "expected_keywords": ["StrOutputParser", "parse", "AIMessage"]
+  },
+  {
+    "id": "eval_021",
+    "question": "¿Cómo construir un callback handler asíncrono heredando de AsyncCallbackHandler?",
+    "expected_symbol": "AsyncCallbackHandler",
+    "expected_canonical_import": "from langchain_core.callbacks import AsyncCallbackHandler",
+    "expected_keywords": ["AsyncCallbackHandler", "on_llm_start", "on_chain_end"]
+  },
+  {
+    "id": "eval_022",
+    "question": "¿Dónde se importa BaseRetriever para construir recuperadores de información personalizados?",
+    "expected_symbol": "BaseRetriever",
+    "expected_canonical_import": "from langchain_core.retrievers import BaseRetriever",
+    "expected_keywords": ["BaseRetriever", "_get_relevant_documents", "ainvoke"]
+  },
+  {
+    "id": "eval_023",
+    "question": "¿Cómo definir esquemas de salida basados en Pydantic usando PydanticOutputParser?",
+    "expected_symbol": "PydanticOutputParser",
+    "expected_canonical_import": "from langchain_core.output_parsers import PydanticOutputParser",
+    "expected_keywords": ["PydanticOutputParser", "pydantic_object", "get_format_instructions"]
+  },
+  {
+    "id": "eval_024",
+    "question": "¿Cómo manejar llamadas a modelos de chat de manera sincrónica y obtener AIMessage?",
+    "expected_symbol": "BaseChatModel.invoke",
+    "expected_canonical_import": "from langchain_core.language_models import BaseChatModel",
+    "expected_keywords": ["invoke", "AIMessage", "response_metadata"]
+  },
+  {
+    "id": "eval_025",
+    "question": "¿Dónde se importa SystemMessage para definir el rol de sistema en un diálogo?",
+    "expected_symbol": "SystemMessage",
+    "expected_canonical_import": "from langchain_core.messages import SystemMessage",
+    "expected_keywords": ["SystemMessage", "content", "role"]
+  }
+]
