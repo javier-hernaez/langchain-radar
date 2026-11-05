@@ -1,8 +1,10 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_SECRET_KEY = "dev-secret-key-change-in-production"
 
 
 class Settings(BaseSettings):
@@ -25,7 +27,7 @@ class Settings(BaseSettings):
     # Servidor FastAPI
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
     api_port: int = Field(default=8000, alias="API_PORT", ge=1024, le=65535)
-    secret_key: str = Field(default="dev-secret-key-change-in-production", alias="SECRET_KEY")
+    secret_key: str = Field(default=DEFAULT_SECRET_KEY, alias="SECRET_KEY")
 
     # Ingesta GitHub
     github_token: str = Field(default="", alias="GITHUB_TOKEN")
@@ -61,11 +63,28 @@ class Settings(BaseSettings):
         default="langchain_radar", alias="QDRANT_COLLECTION_PREFIX"
     )
 
-    # Embeddings y Reranker
-    embedding_model_name: str = Field(default="BAAI/bge-m3", alias="EMBEDDING_MODEL_NAME")
-    reranker_model_name: str = Field(default="BAAI/bge-reranker-v2-m3", alias="RERANKER_MODEL_NAME")
+    # Embeddings y Reranker (modelos soportados por FastEmbed / ONNX)
+    embedding_model_name: str = Field(
+        default="BAAI/bge-small-en-v1.5", alias="EMBEDDING_MODEL_NAME"
+    )
+    sparse_model_name: str = Field(default="Qdrant/bm25", alias="SPARSE_MODEL_NAME")
+    reranker_model_name: str = Field(default="BAAI/bge-reranker-base", alias="RERANKER_MODEL_NAME")
     embedding_batch_size: int = Field(default=64, alias="EMBEDDING_BATCH_SIZE", gt=0, le=512)
     embedding_device: str = Field(default="cpu", alias="EMBEDDING_DEVICE")
+
+    @model_validator(mode="after")
+    def _check_production_secrets(self) -> "Settings":
+        """Impide arrancar en producción con secretos por defecto o vacíos."""
+        if self.app_env != "production":
+            return self
+        problems: list[str] = []
+        if self.secret_key == DEFAULT_SECRET_KEY or len(self.secret_key) < 32:
+            problems.append("SECRET_KEY debe definirse con al menos 32 caracteres")
+        if not self.github_webhook_secret:
+            problems.append("GITHUB_WEBHOOK_SECRET es obligatorio")
+        if problems:
+            raise ValueError("Configuración insegura para producción: " + "; ".join(problems))
+        return self
 
 
 @lru_cache(maxsize=1)

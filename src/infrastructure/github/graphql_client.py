@@ -52,7 +52,6 @@ query GetMergedPRs($owner: String!, $name: String!, $after: String, $pageSize: I
             changeType
             additions
             deletions
-            patch
           }
         }
       }
@@ -81,17 +80,19 @@ class GitHubGraphQLClient:
         self._token = token if token is not None else self._settings.github_token
         self._endpoint = endpoint
         self._client = client
+        self._owns_client = client is None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is not None:
-            return self._client
-        return httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {self._token}",
-                "User-Agent": "LangChain-Radar-Ingestion/1.0",
-            },
-            timeout=30.0,
-        )
+        # Un único cliente reutilizado: crear uno por petición filtraba conexiones
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        return self._client
+
+    async def aclose(self) -> None:
+        """Cierra el cliente HTTP si fue creado internamente."""
+        if self._client is not None and self._owns_client:
+            await self._client.aclose()
+            self._client = None
 
     async def fetch_merged_prs(
         self,
@@ -139,7 +140,11 @@ class GitHubGraphQLClient:
                     labels={"status": str(response.status_code), "endpoint": "graphql"},
                 )
 
-                if response.status_code == 429:
+                rate_limited = response.status_code == 429 or (
+                    response.status_code == 403
+                    and response.headers.get("x-ratelimit-remaining") == "0"
+                )
+                if rate_limited:
                     if retry_count >= max_retries:
                         raise RateLimitExceededError("Rate limit de GitHub API agotado (HTTP 429)")
                     retry_count += 1
@@ -190,9 +195,12 @@ class GitHubGraphQLClient:
 
             for f in file_items:
                 raw_change = f.get("changeType", "MODIFIED").upper()
+                # Enum PatchStatus de GitHub GraphQL
                 status_map = {
                     "ADDED": "ADDED",
+                    "COPIED": "ADDED",
                     "MODIFIED": "MODIFIED",
+                    "CHANGED": "MODIFIED",
                     "DELETED": "REMOVED",
                     "REMOVED": "REMOVED",
                     "RENAMED": "RENAMED",
@@ -205,7 +213,8 @@ class GitHubGraphQLClient:
                     additions=f.get("additions", 0),
                     deletions=f.get("deletions", 0),
                     changes=f.get("additions", 0) + f.get("deletions", 0),
-                    patch=f.get("patch"),
+                    # GraphQL no expone el patch; el contenido se obtiene vía SourceCodeHost
+                    patch=None,
                 )
                 file_changes.append(file_change)
 

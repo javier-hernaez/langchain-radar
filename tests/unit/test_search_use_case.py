@@ -82,3 +82,24 @@ async def test_search_use_case_execution_with_rerank_and_parent_context() -> Non
     assert item.parent_context == "class BaseChatModel: pass"
     assert response.timings.hybrid_retrieval_ms >= 0
     assert response.timings.cross_encoder_rerank_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_search_use_case_sparse_mode_skips_dense_embedding() -> None:
+    mock_vector = AsyncMock()
+    mock_vector.search_hybrid.return_value = []
+    mock_embedding = MagicMock()
+    mock_embedding.embed_sparse.return_value = [([3, 7], [0.4, 0.6])]
+
+    use_case = SearchCodeUseCase(
+        vector_repo=mock_vector,
+        embedding_engine=mock_embedding,
+        reranker_engine=MagicMock(),
+    )
+    response = await use_case.execute(SearchQuery(query="bind tools", search_mode="sparse"))
+
+    assert response.total_hits == 0
+    assert not mock_embedding.embed_dense.called
+    kwargs = mock_vector.search_hybrid.call_args.kwargs
+    assert kwargs["dense_vector"] is None
+    assert kwargs["sparse_indices"] == [3, 7]

@@ -23,7 +23,11 @@ async def test_cli_run_backfill() -> None:
         collection="test_coll",
     )
 
-    with patch("src.interfaces.cli.manage.BackfillUseCase") as mock_use_case_cls:
+    with (
+        patch("src.interfaces.cli.manage.BackfillUseCase") as mock_use_case_cls,
+        patch("src.interfaces.cli.manage.FastembedEmbeddingAdapter"),
+        patch("src.interfaces.cli.manage.RedisStateStore"),
+    ):
         mock_instance = AsyncMock()
         mock_instance.execute.return_value = argparse.Namespace(
             prs_processed=5,
@@ -63,8 +67,11 @@ async def test_cli_run_worker() -> None:
     with (
         patch("src.interfaces.cli.manage.RedisStreamsAdapter") as mock_queue_cls,
         patch("src.interfaces.cli.manage.IngestEventUseCase") as mock_use_case_cls,
+        patch("src.interfaces.cli.manage.FastembedEmbeddingAdapter"),
+        patch("src.interfaces.cli.manage.RedisStateStore"),
     ):
         mock_queue = AsyncMock()
+        mock_queue.claim_stale_events.return_value = []
         mock_queue.read_events.return_value = [
             ("msg-1", {"event_id": "evt-1", "payload": "{}"}),
         ]
@@ -115,7 +122,7 @@ async def test_cli_run_status(capsys: pytest.CaptureFixture[str]) -> None:
         mock_state = AsyncMock()
         mock_state.get_processed_pr_count.return_value = 42
         mock_state.get_checkpoint.return_value = None
-        mock_state_cls.return_value = mock_state
+        mock_state_cls.from_settings.return_value = mock_state
 
         await run_status(args)
         captured = capsys.readouterr()
@@ -129,3 +136,32 @@ def test_cli_main_dispatch() -> None:
     ):
         main()
         assert mock_serve.called
+
+
+@pytest.mark.asyncio
+async def test_cli_run_worker_sends_failed_message_to_dlq() -> None:
+    args = argparse.Namespace(consumer_name="w", batch_size=5, block_ms=10, once=True)
+    with (
+        patch("src.interfaces.cli.manage.RedisStreamsAdapter") as mock_queue_cls,
+        patch("src.interfaces.cli.manage.IngestEventUseCase") as mock_use_case_cls,
+        patch("src.interfaces.cli.manage.FastembedEmbeddingAdapter"),
+        patch("src.interfaces.cli.manage.RedisStateStore"),
+    ):
+        mock_queue = AsyncMock()
+        # Un mensaje huérfano reclamado y uno nuevo que falla
+        mock_queue.claim_stale_events.return_value = [("msg-0", {"payload": "{}"})]
+        mock_queue.read_events.return_value = [("msg-1", {"event_id": "evt-1", "payload": "{}"})]
+        mock_queue_cls.return_value = mock_queue
+
+        mock_use_case = AsyncMock()
+        mock_use_case.process_stream_message.side_effect = [True, RuntimeError("boom")]
+        mock_use_case_cls.return_value = mock_use_case
+
+        await run_worker(args)
+
+        assert mock_use_case.process_stream_message.call_count == 2
+        mock_queue.send_to_dlq.assert_awaited_once()
+        assert mock_queue.send_to_dlq.call_args.kwargs["event_id"] == "evt-1"
+        mock_queue.ack_event.assert_awaited_once_with(
+            "stream:github_events", "radar_workers", "msg-1"
+        )

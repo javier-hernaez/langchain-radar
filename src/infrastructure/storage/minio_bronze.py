@@ -1,3 +1,4 @@
+import asyncio
 import io
 import urllib.parse
 
@@ -47,7 +48,8 @@ class MinioBronzeStorage(BronzeStorage):
         data_bytes = raw_payload.encode("utf-8")
         stream = io.BytesIO(data_bytes)
         try:
-            self._client.put_object(
+            await asyncio.to_thread(
+                self._client.put_object,
                 bucket_name=self._bucket,
                 object_name=object_name,
                 data=stream,
@@ -70,13 +72,7 @@ class MinioBronzeStorage(BronzeStorage):
         bucket_name = parsed.netloc
         object_name = parsed.path.lstrip("/")
         try:
-            response = self._client.get_object(bucket_name, object_name)
-            try:
-                content = response.read().decode("utf-8")
-                return content
-            finally:
-                response.close()
-                response.release_conn()
+            return await asyncio.to_thread(self._read_object, bucket_name, object_name)
         except S3Error as e:
             raise StorageError(
                 f"Objeto no encontrado o error S3 en {s3_uri}: {e}",
@@ -87,3 +83,11 @@ class MinioBronzeStorage(BronzeStorage):
                 f"Error inesperado al leer objeto de MinIO {s3_uri}: {e}",
                 {"s3_uri": s3_uri},
             ) from e
+
+    def _read_object(self, bucket_name: str, object_name: str) -> str:
+        response = self._client.get_object(bucket_name, object_name)
+        try:
+            return str(response.read().decode("utf-8"))
+        finally:
+            response.close()
+            response.release_conn()

@@ -21,8 +21,9 @@
 * **Chunking Jerárquico Padre-Hijo por AST:** Fragmenta clases preservando la relación entre el esqueleto de clase y sus métodos hijos mediante enlaces relacionales `parent_chunk_id`.
 * **Canonical Import Resolver:** Mapea automáticamente la estructura física de archivos a rutas idiomáticas públicas (`from langchain_core.language_models import BaseChatModel`).
 * **Seguridad Pre-Ingesta (Secret Scrubber):** Sanitización estricta basada en firmas regex de Gitleaks para prevenir la indexación de credenciales.
-* **Inferencia Local 100% CPU:** Modelo `bge-m3` (denso + disperso) y Cross-Encoder `bge-reranker-base` optimizados con ONNX Runtime sin requerir GPUs NVIDIA.
-* **Ingesta Reactiva en Tiempo Real:** Receptor de Webhooks en FastAPI con verificación HMAC SHA-256 en $<20\text{ ms}$, deduplicación en Redis con `SETNX` (TTL 24h) y encolado en `Redis Streams`.
+* **Inferencia Local 100% CPU:** Embeddings densos (`bge-small-en-v1.5` por defecto), dispersos (`Qdrant/bm25`) y Cross-Encoder `bge-reranker-base` vía FastEmbed / ONNX Runtime, sin GPUs. Configurables con `EMBEDDING_MODEL_NAME`, `SPARSE_MODEL_NAME` y `RERANKER_MODEL_NAME`.
+* **Ingesta Reactiva en Tiempo Real:** Receptor de Webhooks en FastAPI con verificación HMAC SHA-256 en $<20\text{ ms}$, deduplicación en Redis con `SETNX` (TTL 24h) y encolado en `Redis Streams`. El worker obtiene los ficheros del PR y su contenido completo en el commit de merge vía la API REST de GitHub (requiere `GITHUB_TOKEN`), reclama mensajes huérfanos con `XAUTOCLAIM` y deriva los fallos a una Dead-Letter Queue (`<stream>_dlq`).
+* **Arranque seguro en producción:** con `APP_ENV=production` la aplicación se niega a arrancar si `SECRET_KEY` es el valor por defecto (o tiene menos de 32 caracteres) o si falta `GITHUB_WEBHOOK_SECRET`.
 
 ---
 
@@ -45,7 +46,7 @@ langchain-radar/
 │   │   ├── embeddings/      # Fastembed (BGE-M3 denso/sparse, Cross-Encoder)
 │   │   ├── queue/           # RedisStreamsAdapter
 │   │   ├── security/        # SecretScrubber
-│   │   └── github/          # GitHubGraphQLClient, ShallowGitEngine, WebhookValidator
+│   │   └── github/          # GitHubGraphQLClient, GitHubRestClient, ShallowGitEngine, WebhookValidator
 │   └── interfaces/          # Puntos de entrada (FastAPI y CLI)
 │       ├── api/             # Endpoints /api/v1/search, /webhook, /health, /reindex
 │       └── cli/             # manage.py

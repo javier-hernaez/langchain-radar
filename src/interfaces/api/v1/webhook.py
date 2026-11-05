@@ -87,10 +87,24 @@ async def handle_github_webhook(
             detail="Firma criptográfica HMAC-SHA256 inválida o ausente",
         )
 
-    # Si no hay delivery id provisto, generar o fallar
+    # 3. Decodificar payload antes de marcar el evento, para no deduplicar basura
+    try:
+        payload_data = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cuerpo de la petición JSON malformado: {e}",
+        ) from e
+    if not isinstance(payload_data, dict):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El payload JSON debe ser un objeto",
+        )
+
+    # Si no hay delivery id provisto, generar uno
     event_id = x_github_delivery or f"evt_{datetime.now(UTC).timestamp()}"
 
-    # 3. Deduplicación atómica en Redis (SETNX 24h)
+    # 4. Deduplicación atómica en Redis (SETNX 24h)
     is_duplicate = await queue.is_duplicate_or_mark(
         event_id=event_id, ttl_seconds=settings.redis_dedup_ttl_seconds
     )
@@ -99,41 +113,37 @@ async def handle_github_webhook(
         response.status_code = status.HTTP_200_OK
         return {"status": "already_processed", "event_id": event_id}
 
-    # 4. Decodificar payload para auditar e identificar PR
-    try:
-        payload_data = json.loads(raw_body.decode("utf-8"))
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cuerpo de la petición JSON malformado: {e}",
-        ) from e
-
-    # 5. Persistencia raw inmutable en Bronze Lakehouse
     now = datetime.now(UTC)
-    raw_str = raw_body.decode("utf-8")
-    await bronze.save_raw_event(
-        event_id=event_id,
-        year=now.year,
-        month=now.month,
-        day=now.day,
-        raw_payload=raw_str,
-    )
+    try:
+        # 5. Persistencia raw inmutable en Bronze Lakehouse
+        await bronze.save_raw_event(
+            event_id=event_id,
+            year=now.year,
+            month=now.month,
+            day=now.day,
+            raw_payload=raw_body.decode("utf-8"),
+        )
 
-    # 6. Encolado reactivo en Redis Streams para procesamiento desacoplado
-    queue_payload = json.dumps(
-        {
-            "event_id": event_id,
-            "event_type": x_github_event or "unknown",
-            "action": payload_data.get("action", ""),
-            "received_at": now.isoformat(),
-            "payload": payload_data,
-        }
-    )
-    await queue.enqueue_event(
-        stream_name=settings.redis_stream_key,
-        event_id=event_id,
-        payload_json=queue_payload,
-    )
+        # 6. Encolado reactivo en Redis Streams para procesamiento desacoplado
+        queue_payload = json.dumps(
+            {
+                "event_id": event_id,
+                "event_type": x_github_event or "unknown",
+                "action": payload_data.get("action", ""),
+                "received_at": now.isoformat(),
+                "payload": payload_data,
+            }
+        )
+        await queue.enqueue_event(
+            stream_name=settings.redis_stream_key,
+            event_id=event_id,
+            payload_json=queue_payload,
+        )
+    except Exception:
+        # Liberar la marca: si no, el reintento de GitHub se descartaría como duplicado
+        logger.exception("Fallo al persistir/encolar el evento %s; se libera la marca", event_id)
+        await queue.unmark_event(event_id)
+        raise
 
     response.status_code = status.HTTP_202_ACCEPTED
     return {"status": "accepted", "event_id": event_id}

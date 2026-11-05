@@ -211,7 +211,7 @@ async def test_qdrant_adapter_advanced_filters_and_hashes() -> None:
 
     # Test VectorStoreError propagation on error
     bad_client = MagicMock()
-    bad_client.get_collections.side_effect = RuntimeError("Qdrant offline")
+    bad_client.collection_exists.side_effect = RuntimeError("Qdrant offline")
     bad_adapter = QdrantVectorAdapter(client=bad_client)
     with pytest.raises(VectorStoreError):
         await bad_adapter.ensure_collection("bad_coll")

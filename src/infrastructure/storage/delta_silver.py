@@ -1,7 +1,9 @@
+import asyncio
 import uuid
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 from deltalake import DeltaTable, write_deltalake
 
 from config.settings import Settings, get_settings
@@ -104,7 +106,9 @@ class DeltaSilverStorage(SilverStorage):
 
         try:
             arrow_table = pa.Table.from_pylist(rows, schema=SILVER_SCHEMA)
-            write_deltalake(
+            # Escritura síncrona (delta-rs) fuera del event loop
+            await asyncio.to_thread(
+                write_deltalake,
                 table_or_uri=self._table_uri,
                 data=arrow_table,
                 mode="append",
@@ -118,18 +122,19 @@ class DeltaSilverStorage(SilverStorage):
                 {"table_uri": self._table_uri, "count": len(chunks)},
             ) from e
 
+    def _read_commit_rows(self, commit_sha: str) -> list[dict[str, Any]]:
+        dt = DeltaTable(
+            table_uri=self._table_uri,
+            storage_options=self._storage_options if self._storage_options else None,
+        )
+        filtered = dt.to_pyarrow_dataset().to_table(filter=(pc.field("commit_sha") == commit_sha))
+        rows: list[dict[str, Any]] = filtered.to_pylist()
+        return rows
+
     async def get_chunks_by_commit(self, commit_sha: str) -> list[CodeChunk | DocChunk]:
         """Recupera los chunks asociados a un commit específico desde Silver."""
         try:
-            dt = DeltaTable(
-                table_uri=self._table_uri,
-                storage_options=self._storage_options if self._storage_options else None,
-            )
-            pyarrow_dataset = dt.to_pyarrow_dataset()
-            filtered = pyarrow_dataset.to_table(
-                filter=(pa.compute.field("commit_sha") == commit_sha)
-            )
-            pylist = filtered.to_pylist()
+            pylist = await asyncio.to_thread(self._read_commit_rows, commit_sha)
 
             result: list[CodeChunk | DocChunk] = []
             for row in pylist:

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -8,10 +9,12 @@ from config.settings import Settings, get_settings
 from src.application.splitters.ast_python import ASTPythonSplitter
 from src.application.splitters.canonical_resolver import CanonicalImportResolver
 from src.application.splitters.mdx_parser import MDXParser
+from src.application.splitters.source_chunker import SourceFileChunker
 from src.domain.models.chunk import CodeChunk, DocChunk
 from src.domain.models.state import SyncCheckpoint
 from src.domain.ports.embedder import EmbeddingEngine
 from src.domain.ports.object_store import BronzeStorage, SilverStorage
+from src.domain.ports.source_host import SourceCodeHost
 from src.domain.ports.state_store import StateStore
 from src.domain.ports.vector_store import VectorRepository
 from src.infrastructure.github.graphql_client import GitHubGraphQLClient
@@ -19,6 +22,9 @@ from src.infrastructure.github.shallow_git import ShallowGitEngine
 from src.infrastructure.security.secret_scrubber import SecretScrubber
 
 logger = logging.getLogger(__name__)
+
+# Descargas concurrentes máximas de contenidos de ficheros por PR
+_MAX_CONCURRENT_FETCHES = 8
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,7 @@ class BackfillUseCase:
         silver_storage: SilverStorage,
         vector_repo: VectorRepository,
         embedding_engine: EmbeddingEngine,
+        source_host: SourceCodeHost,
         shallow_git: ShallowGitEngine | None = None,
         ast_splitter: ASTPythonSplitter | None = None,
         mdx_parser: MDXParser | None = None,
@@ -68,6 +75,7 @@ class BackfillUseCase:
         self._silver_storage = silver_storage
         self._vector_repo = vector_repo
         self._embedding_engine = embedding_engine
+        self._source_host = source_host
         self._state_store = state_store
         self._shallow_git = shallow_git or ShallowGitEngine()
         self._scrubber = scrubber or SecretScrubber()
@@ -76,12 +84,34 @@ class BackfillUseCase:
             resolver=self._resolver, scrubber=self._scrubber
         )
         self._mdx_parser = mdx_parser or MDXParser(scrubber=self._scrubber)
+        self._chunker = SourceFileChunker(self._ast_splitter, self._mdx_parser, self._resolver)
         self._settings = settings or get_settings()
+
+    def _is_candidate(self, path: str, target_prefixes: tuple[str, ...]) -> bool:
+        return (
+            not self._shallow_git.is_excluded_file(path)
+            and any(path.startswith(prefix) for prefix in target_prefixes)
+            and self._chunker.supports(path)
+        )
+
+    async def _fetch_contents(
+        self, owner: str, repo: str, paths: list[str], ref: str
+    ) -> list[str | None]:
+        """Descarga el contenido completo de los ficheros en la revisión indicada."""
+        semaphore = asyncio.Semaphore(_MAX_CONCURRENT_FETCHES)
+
+        async def fetch(path: str) -> str | None:
+            async with semaphore:
+                return await self._source_host.fetch_file_content(owner, repo, path, ref)
+
+        return list(await asyncio.gather(*(fetch(p) for p in paths)))
 
     async def execute(self, request: BackfillRequest) -> BackfillSummary:
         """Ejecuta el pipeline completo de backfilling batch."""
         start_time = time.monotonic()
         target_collection = request.collection_name or self._settings.qdrant_collection_active
+        owner = request.repo_owner or self._settings.github_repo_owner
+        repo = request.repo_name or self._settings.github_repo_name
 
         # Asegurar que la colección existe en Gold
         await self._vector_repo.ensure_collection(target_collection)
@@ -93,11 +123,14 @@ class BackfillUseCase:
         chunks_skipped_by_hash = 0
 
         cursor: str | None = None
+        previously_processed = 0
         if self._state_store:
             saved_cp = await self._state_store.get_checkpoint("backfill_cursor")
-            if saved_cp and saved_cp.cursor:
-                cursor = saved_cp.cursor
-                logger.info("Reanudando backfill desde cursor guardado: %s", cursor)
+            if saved_cp:
+                previously_processed = saved_cp.total_processed_items
+                if saved_cp.cursor:
+                    cursor = saved_cp.cursor
+                    logger.info("Reanudando backfill desde cursor guardado: %s", cursor)
 
         has_next = True
         seen_hashes: set[str] = set()
@@ -105,8 +138,8 @@ class BackfillUseCase:
         while has_next and prs_processed < request.max_prs:
             fetch_size = min(20, request.max_prs - prs_processed)
             prs, cursor, has_next = await self._github_client.fetch_merged_prs(
-                owner=request.repo_owner,
-                repo=request.repo_name,
+                owner=owner,
+                repo=repo,
                 page_size=fetch_size,
                 cursor=cursor,
             )
@@ -131,52 +164,34 @@ class BackfillUseCase:
 
                 pr_chunks: list[CodeChunk | DocChunk] = []
 
-                # 2. Procesar archivos modificados
-                for file_change in pr.files_changed:
-                    path = file_change.file_path
-                    if self._shallow_git.is_excluded_file(path):
-                        continue
+                # 2. Descargar el contenido completo de cada fichero en el commit de merge.
+                #    El patch (diff) no es código Python/Markdown válido para el particionado.
+                candidates = [
+                    fc
+                    for fc in pr.files_changed
+                    if fc.status != "REMOVED"
+                    and self._is_candidate(fc.file_path, request.target_prefixes)
+                ]
+                contents = await self._fetch_contents(
+                    owner, repo, [fc.file_path for fc in candidates], pr.merge_commit_sha
+                )
 
-                    # Filtrar carpetas objetivo
-                    if not any(path.startswith(prefix) for prefix in request.target_prefixes):
+                for file_change, content in zip(candidates, contents, strict=True):
+                    if not content or not content.strip():
                         continue
-
-                    patch_content = file_change.patch or ""
-                    if not patch_content:
-                        continue
-
                     files_processed += 1
-
-                    if path.endswith(".py"):
-                        # Si es un __init__.py, registrarlo en el resolver
-                        if path.endswith("__init__.py"):
-                            self._resolver.register_init_file(path, patch_content)
-
-                        parsed_chunks = self._ast_splitter.split_file(
-                            file_path=path,
-                            source_code=patch_content,
+                    pr_chunks.extend(
+                        self._chunker.chunk(
+                            file_path=file_change.file_path,
+                            content=content,
                             commit_sha=pr.merge_commit_sha,
                             commit_date=pr.merged_at,
-                            release_version="main",
                             pr_number=pr.pr_number,
                             pr_title=pr.title,
                             author=pr.author,
                             breaking_change=pr.is_breaking_change,
                         )
-                        pr_chunks.extend(parsed_chunks)
-
-                    elif path.endswith((".md", ".mdx")):
-                        doc_chunks = self._mdx_parser.parse_document(
-                            file_path=path,
-                            text_content=patch_content,
-                            commit_sha=pr.merge_commit_sha,
-                            commit_date=pr.merged_at,
-                            release_version="main",
-                            pr_number=pr.pr_number,
-                            pr_title=pr.title,
-                            author=pr.author,
-                        )
-                        pr_chunks.extend(doc_chunks)
+                    )
 
                 chunks_created += len(pr_chunks)
 
@@ -199,8 +214,13 @@ class BackfillUseCase:
                         batch = to_embed[i : i + request.batch_size]
                         texts = [c.content for c in batch]
 
-                        dense_vectors = self._embedding_engine.embed_dense(texts)
-                        sparse_vectors = self._embedding_engine.embed_sparse(texts)
+                        # Inferencia CPU fuera del event loop
+                        dense_vectors = await asyncio.to_thread(
+                            self._embedding_engine.embed_dense, texts
+                        )
+                        sparse_vectors = await asyncio.to_thread(
+                            self._embedding_engine.embed_sparse, texts
+                        )
 
                         inserted = await self._vector_repo.upsert_chunks(
                             collection_name=target_collection,
@@ -222,7 +242,7 @@ class BackfillUseCase:
                         last_commit_sha=last_pr.merge_commit_sha,
                         cursor=cursor,
                         last_synced_at=datetime.now(UTC),
-                        total_processed_items=prs_processed,
+                        total_processed_items=previously_processed + prs_processed,
                         metadata={"collection": target_collection},
                     )
                 )

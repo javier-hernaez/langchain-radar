@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from uuid import UUID
@@ -43,17 +44,25 @@ class SearchCodeUseCase:
         # -----------------------------------------------------------------
         stage1_start = time.monotonic()
 
-        # Generar embedding denso
-        dense_vecs = self._embedding_engine.embed_dense([query.query])
-        dense_vector = dense_vecs[0] if dense_vecs else [0.0] * self._embedding_engine.dimension
+        # Inferencia CPU fuera del event loop para no bloquear otras peticiones
+        dense_vector: list[float] | None = None
+        if query.search_mode in ("dense", "hybrid"):
+            dense_vecs = await asyncio.to_thread(self._embedding_engine.embed_dense, [query.query])
+            dense_vector = dense_vecs[0] if dense_vecs else None
 
         sparse_indices: list[int] | None = None
         sparse_values: list[float] | None = None
-
-        if query.search_mode == "hybrid":
-            sparse_vecs = self._embedding_engine.embed_sparse([query.query])
-            if sparse_vecs:
+        if query.search_mode in ("sparse", "hybrid"):
+            sparse_vecs = await asyncio.to_thread(
+                self._embedding_engine.embed_sparse, [query.query]
+            )
+            if sparse_vecs and sparse_vecs[0][0]:
                 sparse_indices, sparse_values = sparse_vecs[0]
+
+        # Sin representación dispersa utilizable, degradar a búsqueda densa
+        if dense_vector is None and sparse_indices is None:
+            dense_vecs = await asyncio.to_thread(self._embedding_engine.embed_dense, [query.query])
+            dense_vector = dense_vecs[0] if dense_vecs else [0.0] * self._embedding_engine.dimension
 
         # Extraer Top-25 candidatos (o proporcional al límite solicitado)
         candidate_limit = max(25, query.limit * 5)
@@ -74,10 +83,11 @@ class SearchCodeUseCase:
         stage2_start = time.monotonic()
 
         if query.use_reranker and len(candidates) > 0:
-            reranked_items = self._reranker_engine.rerank(
-                query=query.query,
-                candidates=candidates,
-                top_k=query.limit,
+            reranked_items = await asyncio.to_thread(
+                self._reranker_engine.rerank,
+                query.query,
+                candidates,
+                query.limit,
             )
         else:
             reranked_items = candidates[: query.limit]

@@ -122,3 +122,13 @@ def test_domain_exceptions() -> None:
 
     val_err = WebhookValidationError("Invalid HMAC signature")
     assert "Invalid HMAC" in str(val_err)
+
+
+def test_settings_reject_insecure_production_config() -> None:
+    with pytest.raises(ValidationError, match="SECRET_KEY"):
+        Settings(APP_ENV="production", GITHUB_WEBHOOK_SECRET="whsec")
+    with pytest.raises(ValidationError, match="GITHUB_WEBHOOK_SECRET"):
+        Settings(APP_ENV="production", SECRET_KEY="x" * 40, GITHUB_WEBHOOK_SECRET="")
+
+    ok = Settings(APP_ENV="production", SECRET_KEY="x" * 40, GITHUB_WEBHOOK_SECRET="whsec")
+    assert ok.app_env == "production"

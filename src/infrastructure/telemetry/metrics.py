@@ -18,13 +18,16 @@ class PrometheusMetrics:
         self._gauges: dict[str, dict[tuple[tuple[str, str], ...], float]] = defaultdict(
             lambda: defaultdict(float)
         )
-        self._histograms: dict[str, dict[tuple[tuple[str, str], ...], list[float]]] = defaultdict(
-            lambda: defaultdict(list)
+        # Solo se acumulan (count, sum): guardar cada observación crecería sin límite
+        self._summaries: dict[str, dict[tuple[tuple[str, str], ...], list[float]]] = defaultdict(
+            lambda: defaultdict(lambda: [0.0, 0.0])
         )
         self._descriptions: dict[str, str] = {
             "github_api_requests_total": "Total de peticiones realizadas a la API de GitHub",
-            "pipeline_processing_time_seconds": "Histograma de tiempo de procesamiento por fase",
-            "active_vectors_count": "Conteo en tiempo real de vectores activos por colección",
+            "pipeline_processing_time_seconds": "Tiempo de procesamiento por fase del pipeline",
+            "indexed_chunks_total": "Total de chunks indexados en Qdrant por colección",
+            "http_requests_total": "Total de peticiones HTTP por método, ruta y estado",
+            "http_request_duration_seconds": "Latencia de las peticiones HTTP en segundos",
             "search_requests_total": "Total de consultas de búsqueda recibidas",
             "search_latency_seconds": "Latencia en segundos de las operaciones de búsqueda",
         }
@@ -58,7 +61,9 @@ class PrometheusMetrics:
     ) -> None:
         key = self._labels_to_key(labels)
         with self._lock:
-            self._histograms[name][key].append(value)
+            stats = self._summaries[name][key]
+            stats[0] += 1
+            stats[1] += value
 
     @contextmanager
     def measure_time(self, name: str, labels: dict[str, str] | None = None) -> Iterator[None]:
@@ -98,14 +103,13 @@ class PrometheusMetrics:
                     else:
                         lines.append(f"{name} {val}")
 
-            # Histograms (Count and Sum summary)
-            for name, hist_data in sorted(self._histograms.items()):
-                desc = self._descriptions.get(name, f"Histogram {name}")
+            # Duraciones: sin buckets, el tipo Prometheus válido es "summary" (_count y _sum)
+            for name, summary_data in sorted(self._summaries.items()):
+                desc = self._descriptions.get(name, f"Summary {name}")
                 lines.append(f"# HELP {name} {desc}")
-                lines.append(f"# TYPE {name} histogram")
-                for labels_tuple, observations in sorted(hist_data.items()):
-                    count = len(observations)
-                    total_sum = sum(observations)
+                lines.append(f"# TYPE {name} summary")
+                for labels_tuple, (count_f, total_sum) in sorted(summary_data.items()):
+                    count = int(count_f)
                     lbl_base = ",".join(f'{k}="{v}"' for k, v in labels_tuple)
                     lbl_count = f"{{{lbl_base}}}" if lbl_base else ""
                     lines.append(f"{name}_count{lbl_count} {count}")

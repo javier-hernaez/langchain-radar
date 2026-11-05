@@ -23,7 +23,8 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
-        allow_credentials=True,
+        # Con origen comodín no deben permitirse credenciales (cookies / Authorization)
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

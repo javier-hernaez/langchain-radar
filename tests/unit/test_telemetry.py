@@ -56,3 +56,23 @@ def test_root_metrics_endpoint() -> None:
     assert resp.status_code == 200
     assert "text/plain" in resp.headers["content-type"]
     assert "# HELP" in resp.text
+
+
+def test_middleware_uses_route_template_for_path_label() -> None:
+    from src.infrastructure.telemetry.metrics import get_metrics
+
+    app = FastAPI()
+    app.add_middleware(CorrelationAndTelemetryMiddleware)
+
+    @app.get("/items/{item_id}")
+    def get_item(item_id: str) -> dict[str, str]:
+        return {"id": item_id}
+
+    client = TestClient(app)
+    client.get("/items/abc")
+    client.get("/items/xyz")
+
+    text = get_metrics().generate_prometheus_text()
+    assert 'path="/items/{item_id}"' in text
+    assert 'path="/items/abc"' not in text
+    assert "# TYPE http_request_duration_seconds summary" in text

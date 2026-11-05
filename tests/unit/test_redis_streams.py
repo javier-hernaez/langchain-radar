@@ -112,3 +112,21 @@ async def test_redis_streams_error_cases() -> None:
     mock_redis.xadd.side_effect = RuntimeError("DLQ write failure")
     with pytest.raises(EventQueueError):
         await adapter.send_to_dlq("stream:err", "e_err", "detail", "{}")
+
+
+@pytest.mark.asyncio
+async def test_redis_streams_claim_stale_and_unmark() -> None:
+    mock_redis = AsyncMock()
+    mock_redis.xautoclaim.return_value = [
+        "0-0",
+        [("1-0", {"event_id": "e1", "payload": "{}"}), ("2-0", None)],
+        [],
+    ]
+    adapter = RedisStreamsAdapter(client=mock_redis)
+
+    claimed = await adapter.claim_stale_events("s", "g", "c", min_idle_ms=1000, count=5)
+    assert claimed == [("1-0", {"event_id": "e1", "payload": "{}"})]
+    assert mock_redis.xautoclaim.call_args.kwargs["min_idle_time"] == 1000
+
+    await adapter.unmark_event("e1")
+    mock_redis.delete.assert_awaited_once_with("event:e1")

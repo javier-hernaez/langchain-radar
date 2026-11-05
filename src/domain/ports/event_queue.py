@@ -8,6 +8,10 @@ class EventQueue(Protocol):
         """Comprueba atómicamente si el evento ya fue recibido. Devuelve True si es duplicado."""
         ...
 
+    async def unmark_event(self, event_id: str) -> None:
+        """Libera la marca de deduplicación para permitir reintentos tras un fallo."""
+        ...
+
     async def enqueue_event(self, stream_name: str, event_id: str, payload_json: str) -> str:
         """Encola el evento en Redis Streams con backpressure y devuelve el message ID."""
         ...

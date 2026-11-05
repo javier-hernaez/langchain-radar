@@ -1,8 +1,9 @@
+import asyncio
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from qdrant_client import AsyncQdrantClient, QdrantClient, models
+from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 from config.settings import Settings, get_settings
@@ -18,13 +19,11 @@ class QdrantVectorAdapter(VectorRepository):
     def __init__(
         self,
         client: QdrantClient | None = None,
-        async_client: AsyncQdrantClient | None = None,
         settings: Settings | None = None,
         dimension: int = 384,
     ) -> None:
         self._settings = settings or get_settings()
         self._dimension = dimension
-        self._async_client = async_client
         if client:
             self._client = client
         else:
@@ -37,54 +36,40 @@ class QdrantVectorAdapter(VectorRepository):
     async def ensure_collection(self, collection_name: str) -> None:
         """Crea la colección si no existe, configurando índices densos y dispersos."""
         try:
-            collections = self._client.get_collections().collections
-            exists = any(c.name == collection_name for c in collections)
-            if not exists:
-                self._client.create_collection(
-                    collection_name=collection_name,
-                    vectors_config={
-                        "dense": models.VectorParams(
-                            size=self._dimension, distance=models.Distance.COSINE
-                        )
-                    },
-                    sparse_vectors_config={"sparse_lexical": models.SparseVectorParams()},
-                )
-                # Crear índices de payload para filtros rápidos
-                self._client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name="file_path",
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
-                self._client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name="module_name",
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
-                self._client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name="entity_name",
-                    field_schema=models.PayloadSchemaType.KEYWORD,
-                )
-                self._client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name="semver_major",
-                    field_schema=models.PayloadSchemaType.INTEGER,
-                )
-                self._client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name="semver_minor",
-                    field_schema=models.PayloadSchemaType.INTEGER,
-                )
-                self._client.create_payload_index(
-                    collection_name=collection_name,
-                    field_name="is_deprecated",
-                    field_schema=models.PayloadSchemaType.BOOL,
-                )
+            await asyncio.to_thread(self._ensure_collection_sync, collection_name)
         except Exception as e:
             raise VectorStoreError(
                 f"Error al verificar/crear la colección '{collection_name}' en Qdrant: {e}",
                 {"collection_name": collection_name},
             ) from e
+
+    def _ensure_collection_sync(self, collection_name: str) -> None:
+        if self._client.collection_exists(collection_name):
+            return
+        self._client.create_collection(
+            collection_name=collection_name,
+            vectors_config={
+                "dense": models.VectorParams(size=self._dimension, distance=models.Distance.COSINE)
+            },
+            sparse_vectors_config={"sparse_lexical": models.SparseVectorParams()},
+        )
+        # Índices de payload para filtros rápidos
+        payload_indexes: dict[str, models.PayloadSchemaType] = {
+            "file_path": models.PayloadSchemaType.KEYWORD,
+            "module_name": models.PayloadSchemaType.KEYWORD,
+            "entity_name": models.PayloadSchemaType.KEYWORD,
+            "entity_type": models.PayloadSchemaType.KEYWORD,
+            "semver_major": models.PayloadSchemaType.INTEGER,
+            "semver_minor": models.PayloadSchemaType.INTEGER,
+            "is_deprecated": models.PayloadSchemaType.BOOL,
+            "commit_date": models.PayloadSchemaType.DATETIME,
+        }
+        for field_name, schema in payload_indexes.items():
+            self._client.create_payload_index(
+                collection_name=collection_name,
+                field_name=field_name,
+                field_schema=schema,
+            )
 
     async def upsert_chunks(
         self,
@@ -145,7 +130,9 @@ class QdrantVectorAdapter(VectorRepository):
             points.append(models.PointStruct(id=point_id, vector=vector_data, payload=payload))
 
         try:
-            self._client.upsert(collection_name=collection_name, points=points)
+            await asyncio.to_thread(
+                self._client.upsert, collection_name=collection_name, points=points
+            )
             return len(points)
         except Exception as e:
             raise VectorStoreError(
@@ -156,7 +143,8 @@ class QdrantVectorAdapter(VectorRepository):
     async def delete_by_file_path(self, collection_name: str, file_path: str) -> int:
         """Elimina todos los vectores asociados a un archivo modificado o borrado (Tombstoning)."""
         try:
-            self._client.delete(
+            await asyncio.to_thread(
+                self._client.delete,
                 collection_name=collection_name,
                 points_selector=models.FilterSelector(
                     filter=models.Filter(
@@ -228,81 +216,87 @@ class QdrantVectorAdapter(VectorRepository):
             return None
         return models.Filter(must=must_conditions)
 
+    @staticmethod
+    def _payload_to_item(payload: dict[str, Any], score: float) -> SearchResultItem:
+        commit_date_raw = payload.get("commit_date")
+        last_updated = (
+            datetime.fromisoformat(commit_date_raw)
+            if isinstance(commit_date_raw, str)
+            else datetime.now(UTC)
+        )
+        return SearchResultItem(
+            chunk_id=UUID(payload["chunk_id"]),
+            parent_chunk_id=UUID(payload["parent_chunk_id"])
+            if payload.get("parent_chunk_id")
+            else None,
+            rerank_score=None,
+            hybrid_score=score,
+            entity_name=payload.get("entity_name", ""),
+            canonical_import=payload.get("canonical_import", ""),
+            file_path=payload.get("file_path", ""),
+            release_version=payload.get("release_version", "dev"),
+            last_updated=last_updated,
+            parent_context=None,
+            content=payload.get("content", ""),
+            author=payload.get("author"),
+            pr_number=payload.get("pr_number"),
+            is_deprecated=payload.get("is_deprecated", False),
+            breaking_change=payload.get("breaking_change", False),
+        )
+
     async def search_hybrid(
         self,
         collection_name: str,
-        dense_vector: list[float],
+        dense_vector: list[float] | None,
         sparse_indices: list[int] | None = None,
         sparse_values: list[float] | None = None,
         limit: int = 25,
         filters: SearchFilters | None = None,
     ) -> list[SearchResultItem]:
-        """Ejecuta búsqueda híbrida (Dense + Sparse) fusionada con RRF en Qdrant."""
+        """Búsqueda híbrida (Dense + Sparse con RRF), solo densa o solo dispersa según los vectores."""
         query_filter = self._build_filter(filters)
+        sparse_query = (
+            models.SparseVector(indices=sparse_indices, values=sparse_values)
+            if sparse_indices and sparse_values
+            else None
+        )
+        if dense_vector is None and sparse_query is None:
+            raise VectorStoreError("Se requiere al menos un vector denso o disperso para buscar")
 
         try:
-            if sparse_indices and sparse_values and len(sparse_indices) > 0:
-                prefetch = [
-                    models.Prefetch(
-                        query=dense_vector,
-                        using="dense",
-                        limit=limit,
-                        filter=query_filter,
-                    ),
-                    models.Prefetch(
-                        query=models.SparseVector(indices=sparse_indices, values=sparse_values),
-                        using="sparse_lexical",
-                        limit=limit,
-                        filter=query_filter,
-                    ),
-                ]
-                query_res = self._client.query_points(
+            if dense_vector is not None and sparse_query is not None:
+                query_res = await asyncio.to_thread(
+                    self._client.query_points,
                     collection_name=collection_name,
-                    prefetch=prefetch,
+                    prefetch=[
+                        models.Prefetch(
+                            query=dense_vector, using="dense", limit=limit, filter=query_filter
+                        ),
+                        models.Prefetch(
+                            query=sparse_query,
+                            using="sparse_lexical",
+                            limit=limit,
+                            filter=query_filter,
+                        ),
+                    ],
                     query=models.FusionQuery(fusion=models.Fusion.RRF),
                     limit=limit,
                 )
-                scored_points = query_res.points
             else:
-                query_res = self._client.query_points(
+                query_res = await asyncio.to_thread(
+                    self._client.query_points,
                     collection_name=collection_name,
-                    query=dense_vector,
-                    using="dense",
+                    query=dense_vector if dense_vector is not None else sparse_query,
+                    using="dense" if dense_vector is not None else "sparse_lexical",
                     query_filter=query_filter,
                     limit=limit,
                 )
-                scored_points = query_res.points
 
-            results: list[SearchResultItem] = []
-            for sp in scored_points:
-                payload = sp.payload or {}
-                commit_date_raw = payload.get("commit_date")
-                if isinstance(commit_date_raw, str):
-                    last_updated = datetime.fromisoformat(commit_date_raw)
-                else:
-                    last_updated = datetime.now(UTC)
-
-                item = SearchResultItem(
-                    chunk_id=UUID(payload["chunk_id"]),
-                    parent_chunk_id=UUID(payload["parent_chunk_id"])
-                    if payload.get("parent_chunk_id")
-                    else None,
-                    rerank_score=None,
-                    hybrid_score=float(sp.score),
-                    entity_name=payload.get("entity_name", ""),
-                    canonical_import=payload.get("canonical_import", ""),
-                    file_path=payload.get("file_path", ""),
-                    release_version=payload.get("release_version", "dev"),
-                    last_updated=last_updated,
-                    parent_context=None,
-                    content=payload.get("content", ""),
-                    author=payload.get("author"),
-                    pr_number=payload.get("pr_number"),
-                    is_deprecated=payload.get("is_deprecated", False),
-                    breaking_change=payload.get("breaking_change", False),
-                )
-                results.append(item)
-            return results
+            return [
+                self._payload_to_item(sp.payload, float(sp.score))
+                for sp in query_res.points
+                if sp.payload and "chunk_id" in sp.payload
+            ]
         except Exception as e:
             raise VectorStoreError(
                 f"Error al ejecutar búsqueda híbrida en Qdrant: {e}",
@@ -317,10 +311,10 @@ class QdrantVectorAdapter(VectorRepository):
             return {}
 
         try:
-            str_ids = [str(cid) for cid in chunk_ids]
-            points = self._client.retrieve(
+            points = await asyncio.to_thread(
+                self._client.retrieve,
                 collection_name=collection_name,
-                ids=str_ids,
+                ids=[str(cid) for cid in chunk_ids],
                 with_payload=True,
             )
             items_by_id: dict[UUID, SearchResultItem] = {}
@@ -328,33 +322,8 @@ class QdrantVectorAdapter(VectorRepository):
                 payload = point.payload or {}
                 if "chunk_id" not in payload:
                     continue
-                cid = UUID(payload["chunk_id"])
-                commit_date_raw = payload.get("commit_date")
-                last_updated = (
-                    datetime.fromisoformat(commit_date_raw)
-                    if isinstance(commit_date_raw, str)
-                    else datetime.now(UTC)
-                )
-
-                item = SearchResultItem(
-                    chunk_id=cid,
-                    parent_chunk_id=UUID(payload["parent_chunk_id"])
-                    if payload.get("parent_chunk_id")
-                    else None,
-                    hybrid_score=1.0,
-                    entity_name=payload.get("entity_name", ""),
-                    canonical_import=payload.get("canonical_import", ""),
-                    file_path=payload.get("file_path", ""),
-                    release_version=payload.get("release_version", "dev"),
-                    last_updated=last_updated,
-                    parent_context=None,
-                    content=payload.get("content", ""),
-                    author=payload.get("author"),
-                    pr_number=payload.get("pr_number"),
-                    is_deprecated=payload.get("is_deprecated", False),
-                    breaking_change=payload.get("breaking_change", False),
-                )
-                items_by_id[cid] = item
+                item = self._payload_to_item(payload, 1.0)
+                items_by_id[item.chunk_id] = item
             return items_by_id
         except Exception as e:
             raise VectorStoreError(
@@ -386,7 +355,9 @@ class QdrantVectorAdapter(VectorRepository):
             )
         )
         try:
-            self._client.update_collection_aliases(change_aliases_operations=operations)
+            await asyncio.to_thread(
+                self._client.update_collection_aliases, change_aliases_operations=operations
+            )
         except UnexpectedResponse as e:
             raise VectorStoreError(
                 f"Error al cambiar alias Blue/Green en Qdrant: {e}",

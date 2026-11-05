@@ -1,3 +1,5 @@
+import threading
+
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 
 from config.settings import Settings, get_settings
@@ -15,15 +17,17 @@ class FastembedRerankerAdapter(RerankerEngine):
         lazy_load: bool = True,
     ) -> None:
         self._settings = settings or get_settings()
-        self._model_name = model_name or "BAAI/bge-reranker-base"
+        self._model_name = model_name or self._settings.reranker_model_name
         self._model: TextCrossEncoder | None = None
+        self._init_lock = threading.Lock()
 
         if not lazy_load:
             self._init_model()
 
     def _init_model(self) -> None:
-        if self._model is None:
-            self._model = TextCrossEncoder(model_name=self._model_name)
+        with self._init_lock:
+            if self._model is None:
+                self._model = TextCrossEncoder(model_name=self._model_name)
 
     def rerank(
         self, query: str, candidates: list[SearchResultItem], top_k: int = 5
@@ -40,7 +44,7 @@ class FastembedRerankerAdapter(RerankerEngine):
         scores = [float(s) for s in scores_iter]
 
         scored_items: list[tuple[float, SearchResultItem]] = []
-        for score, item in zip(scores, candidates, strict=False):
+        for score, item in zip(scores, candidates, strict=True):
             updated_item = item.model_copy(update={"rerank_score": score})
             scored_items.append((score, updated_item))
 

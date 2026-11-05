@@ -1,3 +1,4 @@
+import hmac
 import logging
 from datetime import UTC, datetime
 from typing import Annotated
@@ -35,7 +36,7 @@ def set_health_vector_repo(repo: VectorRepository | None) -> None:
 def get_state_store() -> StateStore:
     global _state_store
     if _state_store is None:
-        _state_store = RedisStateStore()
+        _state_store = RedisStateStore.from_settings(get_settings())
     return _state_store
 
 
@@ -79,13 +80,14 @@ def verify_admin_token(
     authorization: Annotated[str | None, Header()] = None,
 ) -> None:
     """Valida el token Bearer para endpoints de gobernanza administrativa."""
-    if not authorization:
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Cabecera Authorization Bearer requerida",
         )
     token = authorization.removeprefix("Bearer ").strip()
-    if token != settings.secret_key:
+    # Comparación en tiempo constante para evitar ataques de temporización
+    if not hmac.compare_digest(token.encode("utf-8"), settings.secret_key.encode("utf-8")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Token administrativo inválido",

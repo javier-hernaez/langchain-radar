@@ -97,3 +97,45 @@ async def test_webhook_endpoint_unauthorized_bad_signature() -> None:
             content=b'{"action": "closed"}',
         )
         assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_webhook_releases_dedup_mark_when_enqueue_fails() -> None:
+    mock_validator = MagicMock()
+    mock_validator.verify_signature.return_value = True
+    mock_queue = AsyncMock()
+    mock_queue.is_duplicate_or_mark.return_value = False
+    mock_queue.enqueue_event.side_effect = RuntimeError("redis down")
+    mock_bronze = AsyncMock()
+
+    set_dependencies(validator=mock_validator, queue=mock_queue, bronze=mock_bronze)
+
+    transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/webhook",
+            headers={"X-GitHub-Delivery": "delivery_fail", "X-GitHub-Event": "pull_request"},
+            content=b'{"action": "closed"}',
+        )
+    assert response.status_code == 500
+    # Sin liberar la marca, el reintento de GitHub se descartaría como duplicado
+    mock_queue.unmark_event.assert_awaited_once_with("delivery_fail")
+
+
+@pytest.mark.asyncio
+async def test_webhook_malformed_json_is_rejected_before_dedup() -> None:
+    mock_validator = MagicMock()
+    mock_validator.verify_signature.return_value = True
+    mock_queue = AsyncMock()
+
+    set_dependencies(validator=mock_validator, queue=mock_queue, bronze=AsyncMock())
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/webhook",
+            headers={"X-GitHub-Delivery": "delivery_bad", "X-GitHub-Event": "pull_request"},
+            content=b"not-json{",
+        )
+    assert response.status_code == 400
+    assert not mock_queue.is_duplicate_or_mark.called

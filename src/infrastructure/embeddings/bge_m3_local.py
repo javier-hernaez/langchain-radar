@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -18,27 +19,35 @@ class FastembedEmbeddingAdapter(EmbeddingEngine):
         lazy_load: bool = True,
     ) -> None:
         self._settings = settings or get_settings()
-        self._dense_model_name = dense_model_name or "BAAI/bge-small-en-v1.5"
-        self._sparse_model_name = sparse_model_name or "Qdrant/bm25"
+        self._dense_model_name = dense_model_name or self._settings.embedding_model_name
+        self._sparse_model_name = sparse_model_name or self._settings.sparse_model_name
         self._dense_model: TextEmbedding | None = None
         self._sparse_model: SparseTextEmbedding | None = None
-        self._dimension = 384 if "small" in self._dense_model_name else 768
+        self._dimension: int | None = None
+        # Los modelos se cargan de forma perezosa y pueden invocarse desde hilos de trabajo
+        self._init_lock = threading.Lock()
 
         if not lazy_load:
             self._init_models()
 
     def _init_models(self) -> None:
-        if self._dense_model is None:
-            self._dense_model = TextEmbedding(model_name=self._dense_model_name)
-            # Determinar dimensión exacta dinámicamente
-            sample = list(self._dense_model.embed(["probe"]))[0]
-            self._dimension = len(sample)
+        with self._init_lock:
+            if self._dense_model is None:
+                self._dense_model = TextEmbedding(model_name=self._dense_model_name)
+            if self._dimension is None:
+                # Determinar dimensión exacta dinámicamente
+                sample = list(self._dense_model.embed(["probe"]))[0]
+                self._dimension = len(sample)
 
-        if self._sparse_model is None:
-            self._sparse_model = SparseTextEmbedding(model_name=self._sparse_model_name)
+            if self._sparse_model is None:
+                self._sparse_model = SparseTextEmbedding(model_name=self._sparse_model_name)
 
     @property
     def dimension(self) -> int:
+        """Dimensión real del modelo denso (carga el modelo si aún no se ha hecho)."""
+        if self._dimension is None:
+            self._init_models()
+        assert self._dimension is not None
         return self._dimension
 
     def embed_dense(self, texts: list[str]) -> list[list[float]]:

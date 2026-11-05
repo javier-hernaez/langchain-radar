@@ -3,7 +3,7 @@ services:
   # Vector Store (Qdrant)
   # -------------------------------------------------------------
   qdrant:
-    image: qdrant/qdrant:v1.9.4
+    image: qdrant/qdrant:v1.12.6 # Query API (prefetch + RRF) requiere >= 1.10
     container_name: radar-qdrant
     restart: unless-stopped
     ports:
@@ -95,6 +95,8 @@ services:
     command: ["python", "-m", "src.interfaces.cli.manage", "serve", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
+    volumes:
+      - model_cache:/home/radar/.cache
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -104,6 +106,10 @@ services:
       - MINIO_SECURE=false
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - APP_ENV=${APP_ENV:-development}
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -124,6 +130,8 @@ services:
     container_name: radar-worker
     restart: unless-stopped
     command: ["python", "-m", "src.interfaces.cli.manage", "worker", "--consumer-name", "compose-worker-1"]
+    volumes:
+      - model_cache:/home/radar/.cache
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
@@ -133,6 +141,10 @@ services:
       - MINIO_SECURE=false
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - APP_ENV=${APP_ENV:-development}
+      - SECRET_KEY=${SECRET_KEY:-dev-secret-key-change-in-production}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -144,6 +156,7 @@ services:
       - radar-net
 
 volumes:
+  model_cache:
   qdrant_data:
   minio_data:
   redis_data:

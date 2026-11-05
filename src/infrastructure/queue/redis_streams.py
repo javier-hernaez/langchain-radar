@@ -46,6 +46,13 @@ class RedisStreamsAdapter(EventQueue):
         except Exception as e:
             raise EventQueueError(f"Error al verificar deduplicación en Redis: {e}") from e
 
+    async def unmark_event(self, event_id: str) -> None:
+        """Elimina la clave de deduplicación para que un reintento del emisor sea aceptado."""
+        try:
+            await self._client.delete(f"event:{event_id}")
+        except Exception as e:
+            raise EventQueueError(f"Error al liberar deduplicación en Redis: {e}") from e
+
     async def enqueue_event(self, stream_name: str, event_id: str, payload_json: str) -> str:
         """Encola el evento en Redis Streams y devuelve el Message ID asignado."""
         try:
@@ -110,6 +117,41 @@ class RedisStreamsAdapter(EventQueue):
         except Exception as e:
             raise EventQueueError(
                 f"Error al leer eventos de Redis Streams ({stream_name}): {e}"
+            ) from e
+
+    async def claim_stale_events(
+        self,
+        stream_name: str,
+        group_name: str,
+        consumer_name: str,
+        min_idle_ms: int = 300_000,
+        count: int = 10,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        """Reclama mensajes pendientes de consumidores caídos (XAUTOCLAIM).
+
+        Sin esto, un mensaje entregado a un worker que muere antes del XACK
+        queda en la Pending Entries List indefinidamente.
+        """
+        try:
+            raw_response: Any = await self._client.xautoclaim(
+                name=stream_name,
+                groupname=group_name,
+                consumername=consumer_name,
+                min_idle_time=min_idle_ms,
+                start_id="0-0",
+                count=count,
+            )
+            if not raw_response or len(raw_response) < 2:
+                return []
+            results: list[tuple[str, dict[str, Any]]] = []
+            for msg in raw_response[1] or []:
+                if not msg or msg[1] is None:
+                    continue
+                results.append((str(msg[0]), dict(msg[1])))
+            return results
+        except Exception as e:
+            raise EventQueueError(
+                f"Error al reclamar mensajes pendientes de {stream_name}: {e}"
             ) from e
 
     async def ack_event(self, stream_name: str, group_name: str, message_id: str) -> None:

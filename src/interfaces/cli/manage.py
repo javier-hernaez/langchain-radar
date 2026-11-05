@@ -4,22 +4,20 @@ import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from config.settings import get_settings
 from src.application.use_cases.backfill import BackfillRequest, BackfillUseCase
 from src.application.use_cases.ingest_event import IngestEventUseCase
 from src.infrastructure.embeddings.bge_m3_local import FastembedEmbeddingAdapter
 from src.infrastructure.github.graphql_client import GitHubGraphQLClient
+from src.infrastructure.github.rest_client import GitHubRestClient
 from src.infrastructure.queue.redis_streams import RedisStreamsAdapter
 from src.infrastructure.state.redis_state import RedisStateStore
 from src.infrastructure.storage.delta_silver import DeltaSilverStorage
 from src.infrastructure.storage.minio_bronze import MinioBronzeStorage
 from src.infrastructure.vector.qdrant_adapter import QdrantVectorAdapter
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger("radar-cli")
 
 
@@ -29,11 +27,13 @@ async def run_backfill(args: argparse.Namespace) -> None:
     logger.info("Iniciando backfill para %s/%s...", args.owner, args.repo)
 
     github_client = GitHubGraphQLClient(settings=settings)
+    rest_client = GitHubRestClient(settings=settings)
     bronze_storage = MinioBronzeStorage(settings=settings)
     silver_storage = DeltaSilverStorage(settings=settings)
-    vector_repo = QdrantVectorAdapter(settings=settings)
     embedding_engine = FastembedEmbeddingAdapter(settings=settings)
-    state_store = RedisStateStore()
+    # La colección se crea con la dimensión real del modelo de embeddings configurado
+    vector_repo = QdrantVectorAdapter(settings=settings, dimension=embedding_engine.dimension)
+    state_store = RedisStateStore.from_settings(settings)
 
     use_case = BackfillUseCase(
         github_client=github_client,
@@ -41,6 +41,7 @@ async def run_backfill(args: argparse.Namespace) -> None:
         silver_storage=silver_storage,
         vector_repo=vector_repo,
         embedding_engine=embedding_engine,
+        source_host=rest_client,
         state_store=state_store,
         settings=settings,
     )
@@ -53,7 +54,11 @@ async def run_backfill(args: argparse.Namespace) -> None:
         collection_name=args.collection,
     )
 
-    summary = await use_case.execute(request)
+    try:
+        summary = await use_case.execute(request)
+    finally:
+        await github_client.aclose()
+        await rest_client.aclose()
     logger.info("=== Backfill Completado con Éxito ===")
     logger.info("PRs procesados: %d", summary.prs_processed)
     logger.info("Archivos analizados: %d", summary.files_processed)
@@ -77,8 +82,9 @@ async def run_worker(args: argparse.Namespace) -> None:
     logger.info("Iniciando background worker consumidor de eventos...")
     queue = RedisStreamsAdapter(settings=settings)
     silver = DeltaSilverStorage(settings=settings)
-    vector = QdrantVectorAdapter(settings=settings)
     embedder = FastembedEmbeddingAdapter(settings=settings)
+    vector = QdrantVectorAdapter(settings=settings, dimension=embedder.dimension)
+    rest_client = GitHubRestClient(settings=settings)
 
     stream_name = settings.redis_stream_key
     group_name = settings.redis_consumer_group
@@ -89,8 +95,9 @@ async def run_worker(args: argparse.Namespace) -> None:
         vector_repo=vector,
         embedding_engine=embedder,
         event_queue=queue,
-        state_store=RedisStateStore(),
+        state_store=RedisStateStore.from_settings(settings),
         settings=settings,
+        source_host=rest_client,
     )
 
     logger.info(
@@ -100,34 +107,66 @@ async def run_worker(args: argparse.Namespace) -> None:
         group_name,
     )
 
-    while True:
-        try:
-            messages = await queue.read_events(
-                stream_name=stream_name,
-                group_name=group_name,
-                consumer_name=args.consumer_name,
-                count=args.batch_size,
-                block_ms=args.block_ms,
-            )
-            for msg_id, fields in messages:
-                logger.info("Procesando mensaje %s...", msg_id)
-                success = await use_case.process_stream_message(
+    try:
+        while True:
+            try:
+                # Primero los mensajes huérfanos de workers caídos, después los nuevos
+                messages = await queue.claim_stale_events(
                     stream_name=stream_name,
                     group_name=group_name,
-                    message_id=msg_id,
-                    fields=fields,
+                    consumer_name=args.consumer_name,
+                    count=args.batch_size,
                 )
-                logger.info("Mensaje %s procesado (éxito: %s)", msg_id, success)
-            if args.once:
+                messages += await queue.read_events(
+                    stream_name=stream_name,
+                    group_name=group_name,
+                    consumer_name=args.consumer_name,
+                    count=args.batch_size,
+                    block_ms=args.block_ms,
+                )
+                for msg_id, fields in messages:
+                    await _handle_message(use_case, queue, stream_name, group_name, msg_id, fields)
+                if args.once:
+                    break
+            except asyncio.CancelledError:
+                logger.info("Worker detenido por señal de cancelación.")
                 break
-        except asyncio.CancelledError:
-            logger.info("Worker detenido por señal de cancelación.")
-            break
-        except Exception as e:
-            logger.error("Error en ciclo de worker: %s", e, exc_info=True)
-            if args.once:
-                raise
-            await asyncio.sleep(2)
+            except Exception as e:
+                logger.error("Error en ciclo de worker: %s", e, exc_info=True)
+                if args.once:
+                    raise
+                await asyncio.sleep(2)
+    finally:
+        await rest_client.aclose()
+
+
+async def _handle_message(
+    use_case: IngestEventUseCase,
+    queue: RedisStreamsAdapter,
+    stream_name: str,
+    group_name: str,
+    msg_id: str,
+    fields: dict[str, Any],
+) -> None:
+    """Procesa un mensaje; ante un fallo lo deriva a la DLQ y lo confirma para no bloquear."""
+    logger.info("Procesando mensaje %s...", msg_id)
+    try:
+        success = await use_case.process_stream_message(
+            stream_name=stream_name,
+            group_name=group_name,
+            message_id=msg_id,
+            fields=fields,
+        )
+        logger.info("Mensaje %s procesado (éxito: %s)", msg_id, success)
+    except Exception as e:
+        logger.error("Fallo procesando mensaje %s: %s", msg_id, e, exc_info=True)
+        await queue.send_to_dlq(
+            stream_name=stream_name,
+            event_id=str(fields.get("event_id", msg_id)),
+            error_message=f"{type(e).__name__}: {e}",
+            payload_json=str(fields.get("payload", "")),
+        )
+        await queue.ack_event(stream_name, group_name, msg_id)
 
 
 async def run_reindex(args: argparse.Namespace) -> None:
@@ -167,7 +206,7 @@ async def run_eval(args: argparse.Namespace) -> None:
 async def run_status(_args: argparse.Namespace) -> None:
     """Muestra el estado de sincronización y métricas del High-Water Mark."""
     settings = get_settings()
-    state_store = RedisStateStore()
+    state_store = RedisStateStore.from_settings(settings)
     cp_backfill = await state_store.get_checkpoint("backfill_cursor")
     cp_stream = await state_store.get_checkpoint("stream_consumer")
     total_prs = await state_store.get_processed_pr_count()
@@ -188,6 +227,10 @@ async def run_status(_args: argparse.Namespace) -> None:
 
 def main() -> None:
     settings = get_settings()
+    logging.basicConfig(
+        level=settings.log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="LangChain Radar - CLI de Gestión, Ingesta y Operaciones",
     )

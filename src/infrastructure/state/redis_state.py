@@ -2,6 +2,9 @@ import json
 import logging
 from typing import Any
 
+import redis.asyncio as aioredis
+
+from config.settings import Settings
 from src.domain.exceptions import StorageError
 from src.domain.models.state import SyncCheckpoint
 from src.domain.ports.state_store import StateStore
@@ -15,9 +18,20 @@ class RedisStateStore(StateStore):
     def __init__(self, client: Any = None, prefix: str = "radar:state") -> None:
         self._client = client
         self._prefix = prefix
-        # Fallback en memoria si no hay cliente Redis configurado
+        # Fallback en memoria si no hay cliente Redis (solo para tests / desarrollo local)
         self._memory_checkpoints: dict[str, SyncCheckpoint] = {}
         self._memory_prs: dict[int, str] = {}
+
+    @classmethod
+    def from_settings(cls, settings: Settings, prefix: str = "radar:state") -> "RedisStateStore":
+        """Construye el store respaldado por Redis real según la configuración."""
+        client = aioredis.Redis(
+            host=settings.redis_host,
+            port=settings.redis_port,
+            db=settings.redis_db,
+            decode_responses=True,
+        )
+        return cls(client=client, prefix=prefix)
 
     def _checkpoint_key(self, checkpoint_id: str) -> str:
         return f"{self._prefix}:checkpoint:{checkpoint_id}"

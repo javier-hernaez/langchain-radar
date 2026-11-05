@@ -8,6 +8,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from src.infrastructure.telemetry.metrics import get_metrics
 
 
+def _route_template(request: Request) -> str:
+    """Etiqueta de ruta de baja cardinalidad (plantilla, no la URL concreta)."""
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+    return route_path if isinstance(route_path, str) else "unmatched"
+
+
 class CorrelationAndTelemetryMiddleware(BaseHTTPMiddleware):
     """Middleware que asigna un Correlation-ID a cada petición y mide latencias para Prometheus."""
 
@@ -18,7 +25,6 @@ class CorrelationAndTelemetryMiddleware(BaseHTTPMiddleware):
         request.state.correlation_id = correlation_id
 
         metrics = get_metrics()
-        path = request.url.path
         method = request.method
         start_time = time.perf_counter()
 
@@ -26,6 +32,7 @@ class CorrelationAndTelemetryMiddleware(BaseHTTPMiddleware):
             response = await call_next(request)
             status_code = str(response.status_code)
         except Exception:
+            path = _route_template(request)
             metrics.inc_counter(
                 "http_requests_total",
                 labels={"method": method, "path": path, "status": "500"},
@@ -33,6 +40,7 @@ class CorrelationAndTelemetryMiddleware(BaseHTTPMiddleware):
             raise
 
         elapsed = time.perf_counter() - start_time
+        path = _route_template(request)
         response.headers["X-Correlation-ID"] = correlation_id
         response.headers["X-Response-Time-Seconds"] = f"{elapsed:.4f}"
 
