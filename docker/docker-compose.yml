@@ -25,17 +25,20 @@ services:
   # -------------------------------------------------------------
   # Lakehouse Storage S3 (MinIO)
   # -------------------------------------------------------------
+  # Las imágenes minio/minio y minio/mc ya no son públicas en Docker Hub ni Quay.
+  # Chainguard publica builds mantenidas; su tier gratuito solo ofrece el tag :latest.
   minio:
-    image: minio/minio:RELEASE.2024-05-10T01-41-38Z
+    image: cgr.dev/chainguard/minio:latest
     container_name: radar-minio
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    command: ["server", "/data", "--console-address", ":9001"]
     ports:
       - "9000:9000" # S3 API
       - "9001:9001" # Web Console
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
+      - MC_HOST_local=http://localhost:9000 # alias usado por el healthcheck
     volumes:
       - minio_data:/data
     healthcheck:
@@ -48,18 +51,19 @@ services:
 
   # Buckets Initializer
   minio-init:
-    image: minio/mc:RELEASE.2024-05-09T17-04-24Z
+    image: cgr.dev/chainguard/minio-client:latest
     container_name: radar-minio-init
     depends_on:
       minio:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
-      /usr/bin/mc mb --ignore-existing myminio/bronze;
-      /usr/bin/mc mb --ignore-existing myminio/silver;
-      exit 0;
-      "
+    # La imagen de Chainguard no incluye /bin/sh, solo bash.
+    # Sin "exit 0": si falla la creación de buckets, api/worker no deben arrancar.
+    entrypoint: ["/usr/bin/bash", "-ec"]
+    command:
+      - |
+        mc alias set myminio http://minio:9000 minioadmin minioadmin
+        mc mb --ignore-existing myminio/bronze
+        mc mb --ignore-existing myminio/silver
     networks:
       - radar-net
 

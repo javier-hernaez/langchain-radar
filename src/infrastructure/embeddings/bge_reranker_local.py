@@ -40,7 +40,10 @@ class FastembedRerankerAdapter(RerankerEngine):
         assert self._model is not None
 
         docs = [item.content for item in candidates]
-        scores_iter = self._model.rerank(query=query, documents=docs, batch_size=32)
+        # batch_size=8: con 32, 25 candidatos de 512 tokens piden un único bloque de 300 MB
+        # en la atención (25×12×512×512×4 B) y ONNX Runtime falla en equipos de 16 GB;
+        # en CPU la latencia es prácticamente la misma.
+        scores_iter = self._model.rerank(query=query, documents=docs, batch_size=8)
         scores = [float(s) for s in scores_iter]
 
         scored_items: list[tuple[float, SearchResultItem]] = []
